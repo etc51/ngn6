@@ -8,6 +8,7 @@ from typing import Any
 
 from ngn6_bot.config import RuntimeConfig
 from ngn6_bot.learning.feedback_model import FeedbackModel
+from ngn6_bot.runtime_metadata import with_commit_hash
 
 
 @dataclass(frozen=True)
@@ -18,7 +19,7 @@ class PromotionCheckReport:
     details: dict[str, Any]
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False, indent=2)
+        return json.dumps(with_commit_hash(asdict(self)), ensure_ascii=False, indent=2)
 
 
 def check_model_eligibility(

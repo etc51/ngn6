@@ -19,6 +19,7 @@ from ngn6_bot.risk import (
     stop_with_buffer,
     update_trailing_stop,
 )
+from ngn6_bot.runtime_metadata import with_commit_hash
 from ngn6_bot.signals import generate_signal
 from ngn6_bot.tbank import TInvestGateway, candle_interval_for_polling
 
@@ -59,7 +60,7 @@ class BacktestReport:
     limitations: list[str]
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False, indent=2)
+        return json.dumps(with_commit_hash(asdict(self)), ensure_ascii=False, indent=2)
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,7 @@ class WalkForwardReport:
     limitations: list[str]
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False, indent=2)
+        return json.dumps(with_commit_hash(asdict(self)), ensure_ascii=False, indent=2)
 
 
 def fetch_1m_history(config: RuntimeConfig, logger, minutes_back: int) -> tuple[str, list[Candle]]:

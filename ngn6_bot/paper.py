@@ -10,6 +10,7 @@ from typing import Any
 
 from ngn6_bot.config import RuntimeConfig
 from ngn6_bot.models import Position, Side
+from ngn6_bot.runtime_metadata import add_commit_hash
 
 
 @dataclass(frozen=True)
@@ -317,11 +318,13 @@ class PaperPortfolio:
 
     def _write_state(self, state: dict[str, Any]) -> None:
         tmp_path = self.config.state_file.with_suffix(self.config.state_file.suffix + ".tmp")
+        add_commit_hash(state)
         tmp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
         tmp_path.replace(self.config.state_file)
 
     def _append_event(self, event: str, timestamp: datetime, details: dict[str, Any]) -> None:
         payload = {"timestamp": timestamp.isoformat(), "event": event, "details": details}
+        add_commit_hash(payload)
         with self.config.events_file.open("a", encoding="utf-8") as file:
             file.write(json.dumps(payload, ensure_ascii=False, default=_json_default) + "\n")
 

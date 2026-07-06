@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from ngn6_bot.config import RuntimeConfig
 from ngn6_bot.models import Candle
+from ngn6_bot.runtime_metadata import with_commit_hash
 
 
 @dataclass(frozen=True)
@@ -124,7 +125,11 @@ class DailyOracleScheduler:
     def _save_generated(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.state_file.write_text(
-            json.dumps({"generated": sorted(self.generated)}, ensure_ascii=False, indent=2),
+            json.dumps(
+                with_commit_hash({"generated": sorted(self.generated)}),
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
@@ -193,6 +198,7 @@ def generate_daily_oracle(
         "sideways_labels": sideways,
         "note": "Oracle labels use future candles only for post-market review. Training features are rebuilt at label time only.",
     }
+    payload = with_commit_hash(payload)
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     _write_labels_csv(labels_csv_path, oracle_trades, sideways, candles_15m, config, trading_date, tz)
     latest_path = output_root / "latest_oracle_labels.csv"

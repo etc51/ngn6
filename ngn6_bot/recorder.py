@@ -12,6 +12,7 @@ from typing import Any
 
 from ngn6_bot.config import RuntimeConfig
 from ngn6_bot.models import Position, Signal
+from ngn6_bot.runtime_metadata import add_commit_hash
 
 
 class StrategyRecorder:
@@ -135,6 +136,7 @@ class StrategyRecorder:
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    add_commit_hash(payload)
     with path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(payload, ensure_ascii=False, default=_json_default) + "\n")
 

@@ -9,6 +9,7 @@ from ngn6_bot.charting import fetch_day_candles, plot_indicator_chart
 from ngn6_bot.config import RuntimeConfig
 from ngn6_bot.models import Candle, MarketState
 from ngn6_bot.recorder import read_jsonl_tail
+from ngn6_bot.runtime_metadata import with_commit_hash
 
 
 class ReviewScheduler:
@@ -92,7 +93,7 @@ class ReviewScheduler:
 
     def _save_generated(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"generated": sorted(self.generated)}
+        payload = with_commit_hash({"generated": sorted(self.generated)})
         self.state_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

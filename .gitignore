@@ -13,3 +13,4 @@ reports/
 *.tmp
 *.egg-info/
 .dashboard-dev-server
+.commit_hash

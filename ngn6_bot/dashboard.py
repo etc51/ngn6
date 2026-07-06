@@ -9,6 +9,7 @@ from urllib.parse import quote, unquote, urlparse
 
 from ngn6_bot.config import RuntimeConfig
 from ngn6_bot.recorder import read_jsonl_tail
+from ngn6_bot.runtime_metadata import current_commit_hash
 
 
 def run_dashboard(config: RuntimeConfig, host: str, port: int) -> None:
@@ -110,6 +111,7 @@ def _status_payload(
             "ticker": config.get("instrument", "ticker"),
             "dry_run": config.dry_run,
             "timezone": config.timezone,
+            "commit_hash": current_commit_hash(),
         },
         "paper": _read_json(paper_state_file),
         "market": market_tail[-1] if market_tail else {},

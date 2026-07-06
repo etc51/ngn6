@@ -26,6 +26,7 @@ from ngn6_bot.learning.feedback_model import (
 )
 from ngn6_bot.microstructure_replay import MicrostructureReplay, neutral_orderbook, neutral_trade_flow
 from ngn6_bot.models import Candle
+from ngn6_bot.runtime_metadata import add_commit_hash
 
 
 @dataclass(frozen=True)
@@ -464,6 +465,7 @@ def _write_training_report(report: FeedbackEnsembleReport, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = asdict(report)
     payload["path"] = str(report.path)
+    add_commit_hash(payload)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
