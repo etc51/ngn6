@@ -1,0 +1,29 @@
+{
+  "name": "ngn6-gas-bot",
+  "version": "1.0.0",
+  "description": "Русскоязычный бот и дашборд по природному газу с сильным упором на новости и контракт NGN6 в T-Bank.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-node-utf8.ps1 src/server.js",
+    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"[Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; node --watch src/server.js\"",
+    "watch:signals": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-node-utf8.ps1 src/signalWatcher.js",
+    "paper:trade": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-node-utf8.ps1 src/paperTrader.js",
+    "paper:once": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-node-utf8.ps1 src/paperTrader.js --once",
+    "tbank:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-node-utf8.ps1 scripts/checkTBankNetwork.js",
+    "notify:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-node-utf8.ps1 scripts/sendNtfyTest.js",
+    "notify:current": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-node-utf8.ps1 scripts/sendCurrentSignal.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "natural-gas",
+    "ngn6",
+    "tbank",
+    "dashboard",
+    "russian"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.env
+logs/
+ngn6_bot/logs/
+data/
+reports/
+*.jsonl
+*.log
+*.tmp
+*.egg-info/
+.dashboard-dev-server

@@ -1,0 +1,19 @@
+[Unit]
+Description=NGN6 intraday T-Invest trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ngn6-bot
+EnvironmentFile=/opt/ngn6-bot/.env
+ExecStart=/opt/ngn6-bot/.venv/bin/ngn6-bot run --config /opt/ngn6-bot/config/ngn6.yaml
+Restart=always
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=30
+User=ngn6bot
+Group=ngn6bot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,443 @@
+bot:
+  name: ngn6_intraday_orderbook_bot
+  timezone: Europe/Moscow
+  dry_run: true
+  live_enabled: false
+  log_level: INFO
+  log_file: logs/ngn6-bot.jsonl
+
+trading:
+  dry_run: true
+  live_enabled: false
+
+auth:
+  token_env: T_INVEST_TOKEN
+  token_file: "%USERPROFILE%/Desktop/жрт новый про.txt"
+
+instrument:
+  ticker: NGN6
+  class_code: SPBFUT
+  figi: ""
+  instrument_uid: ""
+  lot: 1
+  min_price_increment: 0.001
+  money_value_per_price_step: 7.79293
+  initial_margin_on_buy: 7118.76
+  initial_margin_on_sell: 7260.29
+
+account:
+  account_id_env: T_INVEST_ACCOUNT_ID
+  account_id: ""
+  portfolio_currency: RUB
+  deposit_value: 300000
+
+paper:
+  enabled: true
+  initial_cash: 300000
+  max_margin_notional: 1500000
+  state_file: data/paper_state.json
+  events_file: data/paper_events.jsonl
+  # Futures contract RUB value is price / min_price_increment * money_value_per_price_step.
+  notional_multiplier: 7792.93
+
+data_collection:
+  enabled: true
+  market_structure_file: data/market_structure.jsonl
+  decisions_file: data/decisions.jsonl
+  record_raw_microstructure: true
+  record_decision_context: true
+  raw_trade_lookback_seconds: 120
+  recent_trades_limit: 80
+
+market_data:
+  today_only: true
+  block_entries_when_stale: true
+  required_entry_orderbook_source: live
+  max_entry_staleness_seconds: 10
+
+learning:
+  enabled: true
+  # ML control is the primary entry/exit engine, but only approved champion models may trade.
+  mode: "shadow_then_control"
+  labels_file: data/labels/feedback_labels.jsonl
+  legacy_labels_csv: reports/labels.csv
+  oracle_labels_csv: reports/daily_oracle/latest_oracle_labels.csv
+  ensemble_enabled: true
+  ensemble_model_path: data/models/feedback_ensemble.joblib
+  candidate_model_path: data/models/feedback_ensemble.candidate.joblib
+  ensemble_min_examples: 20
+  min_examples: 8
+  neighbors: 7
+  block_similarity_threshold: 0.76
+  opposite_similarity_threshold: 0.78
+  confirmation_similarity_threshold: 0.82
+  active_required_schema: 2
+  required_heads:
+    - entry
+    - exit
+  candidate_can_trade: false
+  active_can_trade_only_if_promoted: true
+  entry_threshold: 0.68
+  exit_threshold: 0.58
+  max_neutral_probability: 0.25
+  min_directional_edge: 0.25
+  min_expected_R: 0.10
+  control_entry_threshold: 0.68
+  control_exit_threshold: 0.58
+  control_max_neutral_probability: 0.25
+  control_min_directional_edge: 0.25
+  control_block_neutral_runner_up: true
+  control_require_ensemble_model: true
+  control_require_schema_v2: true
+  control_require_promoted_model: true
+  control_min_promotion_score: 0.52
+  control_required_entry_targets:
+    - long
+    - short
+    - flat
+  control_exit_confirmations: 3
+  control_exit_adverse_r_threshold: 0.35
+  control_stop_atr_multiple: 1.2
+  control_take_profit_r_multiple: 2.0
+  exploration_enabled: false
+  exploration_entry_threshold: 0.20
+  exploration_runner_up_enabled: false
+  exploration_runner_up_threshold: 0.20
+  exploration_max_lots: 1
+  generate_pnl_examples: true
+  pnl_timeframe: 1min
+  entry_label_horizon_bars: 12
+  exit_label_horizon_bars: 6
+  min_entry_net_pct: 0.10
+  min_direction_edge_pct: 0.04
+  hold_min_net_pct: 0.03
+  decision_examples_enabled: true
+  promote_enabled: true
+  min_entry_examples: 5000
+  min_exit_examples: 3000
+  min_examples_per_class: 500
+  recency_half_life_days: 30
+  promotion_min_score: 0.0
+  promotion_min_improvement: 0.01
+  promotion_backtest_enabled: true
+  promotion_backtest_folds: 8
+  promotion_backtest_max_candles: 1500
+  promotion_min_trades: 150
+  promotion_min_profit_factor: 1.25
+  promotion_min_final_equity_pct: 0.0
+  promotion_max_drawdown_abs_pct: 0.08
+  promotion_min_backtest_improvement_pct: 0.25
+  max_examples: 20000
+
+labeling:
+  method: triple_barrier
+  label_all_decision_events: true
+  label_rejected_signals: true
+  time_barrier_bars_15m: 12
+  min_trainable_R: 0.20
+  min_edge_R: 0.15
+  include_costs: true
+  include_slippage: true
+  purge_unmatured_labels: true
+
+training:
+  schedule: "23:50"
+  exclude_last_unmatured_bars: true
+  max_examples: 20000
+  min_entry_examples: 5000
+  min_exit_examples: 3000
+  min_examples_per_class: 500
+  recency_half_life_days: 30
+  hyperopt:
+    enabled: true
+    tool: optuna
+    max_trials: 50
+    nested_cv: true
+
+validation:
+  splitter: purged_walk_forward
+  folds: 8
+  train_window_days: 45
+  validation_window_days: 7
+  test_window_days: 7
+  embargo_bars: 16
+  purge_by_event_end: true
+
+promotion:
+  required_schema_version: 2
+  required_heads:
+    - entry
+    - exit
+  required_entry_classes:
+    - long
+    - short
+    - flat
+  min_entry_examples_total: 5000
+  min_exit_examples_total: 3000
+  min_examples_per_entry_class: 500
+  max_class_share: 0.70
+  max_feature_nan_rate: 0.001
+  max_label_nan_rate: 0.0
+  require_no_lookahead_tests: true
+  min_oos_trades_total: 150
+  min_oos_trades_per_fold: 20
+  min_profit_factor_oos: 1.25
+  min_profit_factor_median_fold: 1.15
+  min_positive_folds_share: 0.70
+  max_total_oos_drawdown_pct: 0.08
+  max_single_fold_drawdown_pct: 0.05
+  min_avg_net_ticks: 8
+  min_expectancy_R: 0.08
+  max_signal_flip_exit_share: 0.25
+  max_hard_stop_share: 0.35
+  require_better_than_baseline: true
+  min_pf_improvement_vs_baseline: 0.20
+
+shadow:
+  required_before_control: true
+  report_file: reports/shadow/shadow_evaluation.json
+  min_days: 10
+  min_trade_signals: 50
+  min_profit_factor: 1.15
+  max_drawdown_pct: 0.03
+
+drift:
+  enabled: true
+  action_on_warn: raise_thresholds
+  action_on_block: disable_ml_entries
+  require_repromotion_after_block: true
+  psi_warn: 0.15
+  psi_block: 0.25
+  adwin_delta: 0.002
+
+timeframes:
+  execution: 15min
+  confirmation: 5min
+  context: 15min
+  max_candles: 300
+
+indicators:
+  ema_fast: 20
+  ema_slow: 50
+  rsi_period: 14
+  rsi_overbought: 72
+  rsi_oversold: 28
+  atr_period: 14
+  adx_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  bollinger_period: 20
+  bollinger_std: 2.0
+  min_bollinger_width_pct: 0.45
+  volume_ma_period: 20
+  volume_multiplier: 1.25
+
+orderbook:
+  depth: 10
+  max_spread_bps: 8
+  imbalance_levels: 10
+  min_liquidity_cover: 3.0
+  min_imbalance: 0.62
+  wall_multiplier: 3.0
+  absorption_drop_pct: 35
+  min_wall_notional: 100000
+
+microstructure:
+  enabled: true
+  require_for_entry: true
+  max_orderbook_age_seconds: 5
+  max_orderbook_age_sec: 5
+  min_book_pressure: 0.18
+  min_trade_pressure: 0.0
+  min_trade_flow_volume: 0
+  require_trade_flow: false
+  max_adverse_mid_move_bps: 8
+  max_spread_widening_bps: 8
+  required_orderbook_source: live
+  block_stale_entries: true
+
+backtest:
+  microstructure_replay_file: data/market_structure.jsonl
+  microstructure_replay_max_age_seconds: 75
+
+engine:
+  name: ema_adx_macd
+  warmup_candles: 100
+  min_adx: 23
+  require_adx_rising: true
+  min_trend_strength: 0.0035
+  min_signal_strength: 0.45
+  atr_stop_multiple: 1.2
+  take_profit_R_multiple: 2.0
+  time_stop_bars: 12
+  orderbook_required: true
+  ema_adx_macd_always_trade: false
+
+signals:
+  engine: ema_adx_macd
+  legacy_bridge_path: reference/ngn6_signal_source/bridge/compute_signal.js
+  legacy_node_command: node
+  legacy_timeout_seconds: 3.0
+  legacy_timeframe: intraday
+  legacy_min_candles: 80
+  legacy_max_candles: 320
+  legacy_min_probability: 52.0
+  legacy_news_bias: auto
+  legacy_retest: auto
+  legacy_structure: auto
+  legacy_event_risk: none
+  legacy_impulse_enabled: true
+  legacy_impulse_move_pct: 1.2
+  legacy_impulse_breakout_buffer_pct: 0.03
+  legacy_impulse_min_trend: 0.28
+  legacy_impulse_min_momentum: 0.24
+  legacy_impulse_min_candles: 2
+  legacy_impulse_min_probability: 55.5
+  legacy_impulse_max_probability: 63.5
+  reentry_cooldown_after_take_profit_minutes: 30
+  reentry_cooldown_after_exit_minutes: 10
+  reentry_cooldown_after_loss_minutes: 45
+  flip_exit_confirmations: 3
+  flip_exit_adverse_r_threshold: 0.35
+  require_15m_direction: true
+  hold_above_ema_bars: 2
+  support_resistance_lookback: 20
+  max_level_distance_pct: 0.35
+  min_confidence: 0.65
+  trade_flow_lookback_seconds: 30
+  trade_flow_min_buy_ratio: 0.58
+  trade_flow_min_sell_ratio: 0.58
+  allow_rsi_extreme_with_strong_trend: true
+  news_halt: false
+  allow_fallback_entries: false
+  ema_adx_macd_warmup_candles: 100
+  ema_adx_macd_min_adx: 23
+  ema_adx_macd_require_adx_rising: true
+  ema_adx_macd_long_rsi_min: 50
+  ema_adx_macd_long_rsi_max: 75
+  ema_adx_macd_short_rsi_min: 30
+  ema_adx_macd_short_rsi_max: 50
+  ema_adx_macd_min_trend_strength: 0.0035
+  ema_adx_macd_min_signal_strength: 0.45
+  ema_adx_macd_signal_strength_trend_scale: 0.0125
+  ema_adx_macd_stop_atr_multiple: 1.2
+  ema_adx_macd_take_profit_r_multiple: 2.0
+  ema_adx_macd_time_stop_bars: 12
+  ema_adx_macd_orderbook_required: true
+  ema_adx_macd_always_trade: false
+  confirm_5m_for_entry: true
+  block_short_exhaustion_entries: true
+  short_exhaustion_lookback_bars: 20
+  short_exhaustion_impulse_bars: 6
+  short_exhaustion_candle_near_low_pct: 0.10
+  short_exhaustion_min_impulse_down_pct: 1.0
+  short_exhaustion_max_rsi: 40
+  short_exhaustion_max_macd_hist: -0.004
+  short_exhaustion_use_orderbook: true
+  short_exhaustion_orderbook_near_low_pct: 0.25
+  short_exhaustion_min_bid_ask_imbalance: 0.56
+  short_exhaustion_min_depth_pressure: 0.12
+
+risk:
+  risk_per_trade_pct: 0.0025
+  max_risk_per_trade_pct: 0.0025
+  max_position_lots: 1
+  min_position_lots: 1
+  stop_buffer_ticks: 0
+  partial_take_profit_pct: 0
+  partial_take_fraction: 0
+  trailing_stop_pct: 0
+  take_profit_r_multiple: 2.0
+  breakeven_trigger_pct: 0.75
+  trailing_profit_trigger_rub: 1200
+  trailing_profit_lock_ratio: 0.35
+  max_gross_exposure_multiplier: 1.0
+  max_gross_exposure: 1.0
+  max_position_exposure_pct: 0.10
+  cash_reserve_pct: 0.10
+  max_drawdown_pct: 0.05
+  max_drawdown_stop_pct: 0.05
+  daily_max_loss_pct: 0.01
+  max_daily_loss_pct: 0.01
+  stop_after_consecutive_losses: 3
+  stop_after_consecutive_hard_stops: 2
+
+execution:
+  order_type: market
+  slippage_bps_assumption: 4
+  commission_per_lot_per_side: 0.0
+  commission_round_trip_bps: 8
+  min_expected_net_ticks: 8
+  allow_fallback_entries: false
+  allow_trade_without_promoted_model: false
+  require_live_orderbook: true
+  block_stale_entries: true
+  max_entry_staleness_sec: 10
+  retry_attempts: 3
+  retry_wait_seconds: 2
+
+costs:
+  commission_roundtrip_bps: 8
+  slippage_bps_per_side: 4
+  min_expected_net_ticks: 8
+
+signal_flip:
+  close_on_flip: true
+  min_hold_bars_before_flip_exit: 2
+  require_opposite_signal_strength: 0.55
+  require_opposite_ml_confirmation: true
+
+streaming:
+  enabled: true
+  subscribe_orderbook: true
+  subscribe_candles: true
+  subscribe_trades: true
+  reconnect_delay_seconds: 5
+
+polling:
+  enabled: true
+  stale_after_seconds: 15
+  interval_seconds: 5
+
+review:
+  enabled: true
+  times:
+    - "12:00"
+    - "19:00"
+  timeframes:
+    - 1min
+    - 15min
+  output_dir: reports/review
+  state_file: data/review_runs.json
+
+daily_oracle:
+  enabled: true
+  run_time: "23:50"
+  retry_delay_minutes: 30
+  minutes: 12000
+  training_minutes: 90000
+  output_dir: reports/daily_oracle
+  state_file: data/daily_oracle_runs.json
+  horizon_bars: 8
+  min_mfe_pct: 0.60
+  max_mae_pct: 0.35
+  max_trades_per_day: 6
+  min_spacing_bars: 3
+  stop_buffer_pct: 0.08
+  take_profit_pct: 0.80
+  sideways_horizon_bars: 4
+  sideways_max_mfe_pct: 0.25
+
+dashboard:
+  host: 0.0.0.0
+  port: 8080
+
+session:
+  close_positions_before_clearing_minutes: 0
+  # Московское время. Уточните актуальное расписание по спецификации фьючерса перед реальной торговлей.
+  clearings: []
+  forced_flat_hours: []
+  forced_flat_weekdays: []
+  trading_start: "10:00"
+  trading_end: "23:45"
