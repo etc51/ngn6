@@ -177,3 +177,22 @@ ngn6-bot review --config config/ngn6.yaml --date 2026-06-30 --label manual
 - T-Invest API и биржевые ограничения могут менять доступные инструменты, режимы заявок и расписание.
 - Исторические свечи без реального стакана недостаточны для доказательства прибыльности.
 - Реальная торговля требует отдельного контура мониторинга, алертов, лимитов по дневной просадке и kill-switch.
+## Codex Folder Index
+
+This repository now has folder-level README files for fast navigation.
+
+- `config/` - runtime configuration and safety thresholds.
+- `deployment/` - systemd service templates.
+- `ngn6_bot/` - active Python bot package.
+- `ngn6_bot/learning/` - ML, labels, shadow mode, promotion gates.
+- `ngn6_bot/monitoring/` - drift and monitoring helpers.
+- `scripts/` - local Windows operational scripts.
+- `tests/` - Python test suite.
+- `reference/` - legacy/reference source only.
+
+Repository rules:
+
+- Active collection runs on the VPS, not the local Windows machine.
+- Runtime outputs live in `data/`, `logs/`, and `reports/`; they are ignored by git.
+- Every runtime JSON/JSONL report should include `commit_hash`.
+- Do not commit real tokens, account IDs, model artifacts, or market-data dumps.

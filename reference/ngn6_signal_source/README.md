@@ -219,3 +219,17 @@ ${SIGNAL_HOST_DATA_DIR:-./data}:/app/data
 - Это decision-support tool, а не автоторговля.
 - Новостной bias строится rule-based по свежим заголовкам, а не полноценной NLP-моделью.
 - Бэктест не умеет ретроспективно прокручивать живые новости и поэтому оценивает только рыночную часть модели.
+## Codex Folder Rules
+
+This folder is a legacy Node.js reference source. It is not the active Python runtime.
+
+- `bridge/` - JSON bridge used by Python legacy-signal integration.
+- `src/` - legacy watcher, server, and paper-trader runtime.
+- `src/lib/` - legacy signal, config, market-data, news, and helper modules.
+- `test/` - legacy Node.js tests.
+
+Rules:
+
+- Prefer changing the active Python bot under `ngn6_bot/`.
+- Port legacy behavior only with Python tests.
+- Do not add secrets or live account data here.
