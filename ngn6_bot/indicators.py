@@ -44,7 +44,10 @@ def add_indicators(
     df["ema_slow"] = df["close"].ewm(span=ema_slow, adjust=False).mean()
     df["rsi"] = rsi(df["close"], period=rsi_period)
     df["atr"] = atr(df, period=atr_period)
-    df["adx"] = adx(df, period=adx_period)
+    plus_di, minus_di, adx_value = directional_indicators(df, period=adx_period)
+    df["plus_di"] = plus_di
+    df["minus_di"] = minus_di
+    df["adx"] = adx_value
     macd_line, macd_signal_line, macd_hist = macd(
         df["close"],
         fast=macd_fast,
@@ -89,8 +92,16 @@ def atr(frame: pd.DataFrame, period: int = 14) -> pd.Series:
 
 
 def adx(frame: pd.DataFrame, period: int = 14) -> pd.Series:
+    return directional_indicators(frame, period=period)[2]
+
+
+def directional_indicators(
+    frame: pd.DataFrame,
+    period: int = 14,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
     if frame.empty:
-        return pd.Series(dtype=float)
+        empty = pd.Series(dtype=float)
+        return empty, empty, empty
 
     up_move = frame["high"].diff()
     down_move = -frame["low"].diff()
@@ -108,7 +119,8 @@ def adx(frame: pd.DataFrame, period: int = 14) -> pd.Series:
     )
     denominator = plus_di + minus_di
     dx = 100 * (plus_di - minus_di).abs() / denominator.where(denominator != 0)
-    return dx.ewm(alpha=1 / period, min_periods=period, adjust=False).mean().fillna(0.0)
+    adx_value = dx.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    return plus_di.fillna(0.0), minus_di.fillna(0.0), adx_value.fillna(0.0)
 
 
 def macd(

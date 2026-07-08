@@ -12,7 +12,7 @@ from ngn6_bot.costs import ExecutionCostConfig, trade_covers_costs
 from ngn6_bot.execution import BrokerExecutor
 from ngn6_bot.indicators import add_indicators, candles_to_frame
 from ngn6_bot.learning.daily_oracle import DailyOracleScheduler
-from ngn6_bot.learning.feedback_model import FeedbackModel, build_feature_snapshot
+from ngn6_bot.learning.feedback_model import FEATURE_KEYS, FeedbackModel, build_feature_snapshot
 from ngn6_bot.models import MarketState, Side
 from ngn6_bot.orderbook import analyze_order_book, spread_is_acceptable
 from ngn6_bot.paper import PaperPortfolio
@@ -1625,9 +1625,16 @@ class TradingBot:
             "previous_orderbook_snapshot": self.state.previous_order_book,
             "recent_trades": self._recent_trades(now),
         }
-        features = self._feature_snapshot_for_recording(now, context["orderbook"], trade_flow)
-        if features is not None:
-            context["features"] = features
+        trust_reason, trust_details = self._entry_market_data_block(now, context["orderbook"])
+        feature_report = self._feature_snapshot_for_recording(now, context["orderbook"], trade_flow)
+        context.update(feature_report)
+        context.update(
+            {
+                "market_data_trusted": trust_reason is None,
+                "market_data_trust_reason": trust_reason,
+                "market_data_trust_details": trust_details,
+            }
+        )
         return context
 
     def _feature_snapshot_for_recording(self, now: datetime, orderbook_features, trade_flow):
@@ -1636,8 +1643,15 @@ class TradingBot:
             confirmation_df = self._indicator_frame("5min")
             context_df = self._indicator_frame("15min")
             if execution_df.empty:
-                return None
-            return build_feature_snapshot(
+                return {
+                    "features": {},
+                    "feature_complete": False,
+                    "feature_timestamp": None,
+                    "missing_feature_fields": list(FEATURE_KEYS),
+                    "feature_reject_reason": "no_closed_candles",
+                }
+            feature_timestamp = self._last_closed_feature_timestamp(execution_df, now)
+            features = build_feature_snapshot(
                 execution_df=execution_df,
                 confirmation_df=confirmation_df,
                 context_df=context_df,
@@ -1645,10 +1659,45 @@ class TradingBot:
                 trade_flow=trade_flow,
                 now=now,
             )
-        except Exception:
+            missing = [key for key in FEATURE_KEYS if key not in features]
+            return {
+                "features": features,
+                "feature_complete": not missing,
+                "feature_timestamp": feature_timestamp.isoformat() if feature_timestamp else None,
+                "missing_feature_fields": missing,
+                "feature_reject_reason": "missing_feature_fields" if missing else None,
+            }
+        except Exception as exc:
+            return {
+                "features": {},
+                "feature_complete": False,
+                "feature_timestamp": None,
+                "missing_feature_fields": list(FEATURE_KEYS),
+                "feature_reject_reason": f"feature_builder_error:{type(exc).__name__}",
+            }
+
+    @staticmethod
+    def _last_closed_feature_timestamp(frame, now: datetime) -> datetime | None:
+        if frame.empty:
             return None
+        if not hasattr(frame.index, "tz"):
+            return None
+        timestamp = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+        index = frame.index
+        if index.tz is None:
+            cutoff = timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+        else:
+            cutoff = timestamp.astimezone(index.tz)
+        closed = frame.loc[index <= cutoff]
+        if closed.empty:
+            return None
+        value = closed.index[-1]
+        if getattr(value, "tzinfo", None) is None:
+            return value.to_pydatetime().replace(tzinfo=timezone.utc)
+        return value.to_pydatetime()
 
     def _record_market(self, now: datetime, last_price: float, orderbook_features, trade_flow) -> None:
+        trust_reason, trust_details = self._entry_market_data_block(now, orderbook_features)
         self.recorder.record_market(
             timestamp=now,
             ticker=str(self.config.get("instrument", "ticker")),
@@ -1664,6 +1713,9 @@ class TradingBot:
             position=self.state.position,
             orderbook_snapshot=self.state.order_book,
             recent_trades=self._recent_trades(now),
+            market_data_trusted=trust_reason is None,
+            market_data_trust_reason=trust_reason,
+            market_data_trust_details=trust_details,
         )
 
     def _record_decision(

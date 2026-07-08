@@ -20,8 +20,15 @@ from ngn6_bot.config import load_config
 from ngn6_bot.config import RuntimeConfig
 from ngn6_bot.dashboard import run_dashboard
 from ngn6_bot.learning.daily_oracle import generate_daily_oracle_from_api
+from ngn6_bot.learning.feature_audit import audit_feature_completeness, save_feature_completeness_report
 from ngn6_bot.learning.labeling import generate_labeling_charts
+from ngn6_bot.learning.model_diagnostics import (
+    DEFAULT_THRESHOLDS,
+    generate_model_diagnostics,
+    save_model_diagnostics,
+)
 from ngn6_bot.learning.promotion import check_model_eligibility, save_promotion_check
+from ngn6_bot.learning.regime_report import generate_regime_report, save_regime_report
 from ngn6_bot.learning.shadow import evaluate_shadow_predictions, save_shadow_report
 from ngn6_bot.learning.training import train_feedback_from_api
 from ngn6_bot.logging_json import setup_logging
@@ -159,6 +166,46 @@ def main(argv: list[str] | None = None) -> int:
     shadow_parser.add_argument("--decisions", default=None)
     shadow_parser.add_argument("--labels", default=None)
     shadow_parser.add_argument("--report", default=None)
+
+    feature_audit_parser = subparsers.add_parser(
+        "feature-audit",
+        help="Audit feature completeness and market-data trust in runtime JSONL.",
+    )
+    feature_audit_parser.add_argument("--config", default="config/ngn6.yaml")
+    feature_audit_parser.add_argument("--decisions", default=None)
+    feature_audit_parser.add_argument("--market", default=None)
+    feature_audit_parser.add_argument("--report", default="reports/feature_completeness.json")
+
+    regime_parser = subparsers.add_parser(
+        "regime-report",
+        help="Evaluate oracle-derived regime candidates without promoting or trading.",
+    )
+    regime_parser.add_argument("--config", default="config/ngn6.yaml")
+    regime_parser.add_argument("--decisions", default=None)
+    regime_parser.add_argument("--labels-dir", default=None)
+    regime_parser.add_argument("--folds", type=int, default=8)
+    regime_parser.add_argument("--report", default="reports/regime_report.json")
+
+    diagnostics_parser = subparsers.add_parser(
+        "model-diagnostics",
+        help="Explain current candidate examples, thresholds, flat bias, and regimes.",
+    )
+    diagnostics_parser.add_argument("--config", default="config/ngn6.yaml")
+    diagnostics_parser.add_argument(
+        "--model",
+        default="candidate",
+        help="'active', 'candidate', or explicit model path.",
+    )
+    diagnostics_parser.add_argument("--decisions", default=None)
+    diagnostics_parser.add_argument("--labels-dir", default=None)
+    diagnostics_parser.add_argument(
+        "--thresholds",
+        nargs="+",
+        type=float,
+        default=list(DEFAULT_THRESHOLDS),
+    )
+    diagnostics_parser.add_argument("--top-features", type=int, default=20)
+    diagnostics_parser.add_argument("--report", default="reports/model_diagnostics.json")
 
     dashboard_parser = subparsers.add_parser(
         "dashboard",
@@ -479,6 +526,79 @@ def main(argv: list[str] | None = None) -> int:
                     "matured_labels": report.matured_labels,
                     "passed": report.passed,
                     "reason": report.reason,
+                },
+            },
+        )
+        return 0
+
+    if args.command == "feature-audit":
+        report = audit_feature_completeness(
+            config,
+            decisions_path=args.decisions,
+            market_path=args.market,
+        )
+        save_feature_completeness_report(report, args.report)
+        logger.info(
+            "feature_audit_ok",
+            extra={
+                "event": "feature_audit_ok",
+                "details": {
+                    "report": args.report,
+                    "decisions": report["decisions"],
+                    "feature_complete_records": report["feature_complete_records"],
+                    "trainable_decision_records": report["trainable_decision_records"],
+                    "missing_feature_records": report["missing_feature_records"],
+                },
+            },
+        )
+        return 0
+
+    if args.command == "regime-report":
+        report = generate_regime_report(
+            config,
+            decisions_path=args.decisions,
+            labels_dir=args.labels_dir,
+            folds=args.folds,
+        )
+        save_regime_report(report, args.report)
+        logger.info(
+            "regime_report_ok",
+            extra={
+                "event": "regime_report_ok",
+                "details": {
+                    "report": args.report,
+                    "matured_feature_rows": report["matured_feature_rows"],
+                    "regimes": {
+                        key: value["trades"]
+                        for key, value in report["by_regime"].items()
+                    },
+                },
+            },
+        )
+        return 0
+
+    if args.command == "model-diagnostics":
+        model_path = _model_path_from_selector(config, args.model)
+        report = generate_model_diagnostics(
+            config,
+            model_path=model_path,
+            decisions_path=args.decisions,
+            labels_dir=args.labels_dir,
+            thresholds=tuple(args.thresholds),
+            top_features=args.top_features,
+        )
+        save_model_diagnostics(report, args.report)
+        logger.info(
+            "model_diagnostics_ok",
+            extra={
+                "event": "model_diagnostics_ok",
+                "details": {
+                    "report": args.report,
+                    "model_path": report["model_path"],
+                    "examples": report["model"].get("examples_total_heads"),
+                    "label_distribution": report["label_distribution"],
+                    "current_target": report["current_candidate"].get("target"),
+                    "thresholds": report["threshold_replay"],
                 },
             },
         )

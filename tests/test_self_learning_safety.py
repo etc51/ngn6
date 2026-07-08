@@ -444,6 +444,18 @@ def test_promotion_check_blocks_candidate_status(tmp_path):
                 "models": [],
                 "examples": 4000,
             },
+            "opportunity": {
+                "classes": ["no_trade", "trade"],
+                "class_counts": {"no_trade": 3000, "trade": 6000},
+                "models": [],
+                "examples": 9000,
+            },
+            "direction": {
+                "classes": ["long", "short"],
+                "class_counts": {"long": 3000, "short": 3000},
+                "models": [],
+                "examples": 6000,
+            },
         },
         promotion_score=1.0,
         model_status="candidate",

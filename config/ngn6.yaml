@@ -74,6 +74,8 @@ learning:
   active_required_schema: 2
   required_heads:
     - entry
+    - opportunity
+    - direction
     - exit
   candidate_can_trade: false
   active_can_trade_only_if_promoted: true
@@ -112,6 +114,13 @@ learning:
   min_direction_edge_pct: 0.04
   hold_min_net_pct: 0.03
   decision_examples_enabled: true
+  class_balance:
+    enabled: true
+    train_two_stage: true
+    flat_downsample_ratio: 4.0
+    use_class_weights: true
+    min_directional_examples: 100
+    max_flat_share_after_balance: 0.70
   promote_enabled: true
   min_entry_examples: 5000
   min_exit_examples: 3000
@@ -167,6 +176,8 @@ promotion:
   required_schema_version: 2
   required_heads:
     - entry
+    - opportunity
+    - direction
     - exit
   required_entry_classes:
     - long

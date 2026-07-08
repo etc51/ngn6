@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,9 +18,13 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 from ngn6_bot.learning.feedback_model import (
+    ClassBalanceConfig,
+    DIRECTION_TARGETS,
     ENTRY_TARGETS,
     EXIT_CONTROL_TARGETS,
+    FEATURE_SCHEMA_VERSION,
     FEATURE_KEYS,
+    OPPORTUNITY_TARGETS,
     TRAINABLE_TARGETS,
     FeedbackExample,
     label_to_target,
@@ -199,7 +204,18 @@ class FeedbackEnsemble:
         return target
 
     def predict(self, features: dict[str, float], *, task: str = "entry") -> FeedbackEnsemblePrediction:
+        if task == "entry" and {"opportunity", "direction"}.issubset(self.heads):
+            return self._predict_two_stage_entry(features)
         head = self.heads.get(task)
+        return self._predict_head(features, task=task, head=head)
+
+    def _predict_head(
+        self,
+        features: dict[str, float],
+        *,
+        task: str,
+        head: dict[str, Any] | None,
+    ) -> FeedbackEnsemblePrediction:
         if head is None:
             return FeedbackEnsemblePrediction("unknown", 0.0, self.examples, {}, f"no_{task}_head")
         models = list(head.get("models") or [])
@@ -235,15 +251,52 @@ class FeedbackEnsemble:
             probabilities={key: float(value) for key, value in averaged.items()},
         )
 
+    def _predict_two_stage_entry(self, features: dict[str, float]) -> FeedbackEnsemblePrediction:
+        opportunity = self._predict_head(
+            features,
+            task="opportunity",
+            head=self.heads.get("opportunity"),
+        )
+        direction = self._predict_head(
+            features,
+            task="direction",
+            head=self.heads.get("direction"),
+        )
+        if opportunity.target == "unknown":
+            return opportunity
+        trade_score = float(opportunity.probabilities.get("trade", 0.0))
+        no_trade_score = float(opportunity.probabilities.get("no_trade", 0.0))
+        long_score = trade_score * float(direction.probabilities.get("long", 0.0))
+        short_score = trade_score * float(direction.probabilities.get("short", 0.0))
+        probabilities = {
+            "flat": no_trade_score,
+            "long": long_score,
+            "short": short_score,
+        }
+        target, score = max(probabilities.items(), key=lambda pair: pair[1])
+        return FeedbackEnsemblePrediction(
+            target=target,
+            score=float(score),
+            examples=int(self.heads.get("entry", {}).get("examples", opportunity.examples)),
+            model_scores={
+                "opportunity": round(trade_score, 4),
+                "direction": round(float(direction.score), 4),
+            },
+            reason="ml_feedback_two_stage",
+            probabilities=probabilities,
+        )
+
 
 def train_feedback_ensemble(
     examples: list[FeedbackExample],
     *,
     output_path: str | Path,
     min_examples: int = 20,
+    class_balance: ClassBalanceConfig | None = None,
 ) -> FeedbackEnsembleReport:
     training_started_at = datetime.now(timezone.utc).isoformat()
-    usable = _normalized_examples(examples)
+    balance_config = class_balance or ClassBalanceConfig()
+    usable = _quality_filtered_examples(_normalized_examples(examples))
     if len(usable) < min_examples:
         raise ValueError(f"Need at least {min_examples} feedback examples, got {len(usable)}.")
 
@@ -252,46 +305,59 @@ def train_feedback_ensemble(
     all_models: list[str] = []
     all_classes: set[str] = set()
     accuracy_values: list[float] = []
-    for task, allowed_targets in [
-        ("entry", ENTRY_TARGETS),
-        ("exit", EXIT_CONTROL_TARGETS),
-    ]:
-        task_usable = [
-            item for item in usable if item.task == task and item.target in allowed_targets
-        ]
-        if len(task_usable) < min_examples:
+    entry_examples = [
+        item for item in usable if item.task == "entry" and item.target in ENTRY_TARGETS
+    ]
+    balanced_entry, balance_summary = _balance_entry_examples(entry_examples, balance_config)
+    if balance_summary:
+        task_reports["class_balance"] = balance_summary
+
+    head_specs: list[tuple[str, list[FeedbackExample], set[str], bool]] = [
+        ("entry", balanced_entry, ENTRY_TARGETS, True),
+    ]
+    if balance_config.enabled and balance_config.train_two_stage:
+        head_specs.extend(
+            [
+                ("opportunity", _opportunity_examples(balanced_entry), OPPORTUNITY_TARGETS, False),
+                (
+                    "direction",
+                    [item for item in balanced_entry if item.target in DIRECTION_TARGETS],
+                    DIRECTION_TARGETS,
+                    True,
+                ),
+            ]
+        )
+    head_specs.append(
+        (
+            "exit",
+            [
+                item
+                for item in usable
+                if item.task == "exit" and item.target in EXIT_CONTROL_TARGETS
+            ],
+            EXIT_CONTROL_TARGETS,
+            True,
+        )
+    )
+
+    for task, task_usable, allowed_targets, include_money in head_specs:
+        head, report = _train_head(
+            task,
+            task_usable,
+            allowed_targets,
+            min_examples=min_examples,
+            include_money=include_money,
+            use_class_weights=balance_config.use_class_weights,
+        )
+        if head is None or report is None:
             continue
-        classes = sorted({item.target for item in task_usable})
-        if len(classes) < 2:
-            continue
-        x = _features_to_frame([item.features for item in task_usable], FEATURE_KEYS)
-        y = pd.Series([item.target for item in task_usable])
-        models = _train_models(x, y)
-        if not models:
-            continue
-        holdout_accuracy = _holdout_accuracy(x, y, models, classes)
-        money = _holdout_money_metrics(x, task_usable, classes)
-        heads[task] = {
-            "classes": classes,
-            "class_counts": {str(key): int(value) for key, value in y.value_counts().items()},
-            "models": models,
-            "examples": len(task_usable),
-            "holdout_accuracy": holdout_accuracy,
-            "holdout_money": money,
-        }
-        model_names = [item["name"] for item in models]
+        heads[task] = head
+        model_names = [item["name"] for item in head["models"]]
         all_models.extend(f"{task}:{name}" for name in model_names)
-        all_classes.update(classes)
-        if holdout_accuracy is not None:
-            accuracy_values.append(holdout_accuracy)
-        task_reports[task] = {
-            "examples": len(task_usable),
-            "classes": classes,
-            "class_counts": {str(key): int(value) for key, value in y.value_counts().items()},
-            "models": model_names,
-            "holdout_accuracy": holdout_accuracy,
-            **money,
-        }
+        all_classes.update(head["classes"])
+        if head["holdout_accuracy"] is not None:
+            accuracy_values.append(head["holdout_accuracy"])
+        task_reports[task] = report
 
     if not heads:
         raise ValueError("No feedback ensemble heads could be trained.")
@@ -305,10 +371,11 @@ def train_feedback_ensemble(
         "model_status": "candidate",
         "promotion_status": "candidate",
         "promotion_metrics": {},
-        "feature_schema_version": 1,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "training_started_at": training_started_at,
         "training_finished_at": trained_at,
         "dataset_hash": dataset_hash,
+        "class_balance": balance_summary,
     }
     ensemble = FeedbackEnsemble(
         feature_keys=list(FEATURE_KEYS),
@@ -324,7 +391,7 @@ def train_feedback_ensemble(
         promotion_status="candidate",
         promotion_metrics={},
         metadata=metadata,
-        feature_schema_version=1,
+        feature_schema_version=FEATURE_SCHEMA_VERSION,
         training_started_at=training_started_at,
         training_finished_at=trained_at,
         dataset_hash=dataset_hash,
@@ -368,9 +435,162 @@ def _normalized_examples(examples: list[FeedbackExample]) -> list[FeedbackExampl
                 task=task,
                 pnl_pct=item.pnl_pct,
                 outcomes=item.outcomes,
+                feature_complete=item.feature_complete,
+                label_matured=item.label_matured,
+                market_data_trusted=item.market_data_trusted,
+                reject_reason=item.reject_reason,
             )
         )
     return normalized
+
+
+def _quality_filtered_examples(examples: list[FeedbackExample]) -> list[FeedbackExample]:
+    return [
+        item
+        for item in examples
+        if item.feature_complete and item.label_matured and item.market_data_trusted
+    ]
+
+
+def _train_head(
+    task: str,
+    examples: list[FeedbackExample],
+    allowed_targets: set[str],
+    *,
+    min_examples: int,
+    include_money: bool,
+    use_class_weights: bool,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    task_usable = [item for item in examples if item.target in allowed_targets]
+    if len(task_usable) < min_examples:
+        return None, None
+    classes = sorted({item.target for item in task_usable})
+    if len(classes) < 2:
+        return None, None
+    x = _features_to_frame([item.features for item in task_usable], FEATURE_KEYS)
+    y = pd.Series([item.target for item in task_usable])
+    models = _train_models(x, y, use_class_weights=use_class_weights)
+    if not models:
+        return None, None
+    holdout_accuracy = _holdout_accuracy(
+        x,
+        y,
+        models,
+        classes,
+        use_class_weights=use_class_weights,
+    )
+    money = (
+        _holdout_money_metrics(
+            x,
+            task_usable,
+            classes,
+            use_class_weights=use_class_weights,
+        )
+        if include_money
+        else {
+            "holdout_expected_value_pct": None,
+            "holdout_profit_factor": None,
+            "holdout_trades": 0,
+        }
+    )
+    class_counts = {str(key): int(value) for key, value in y.value_counts().items()}
+    head = {
+        "classes": classes,
+        "class_counts": class_counts,
+        "models": models,
+        "examples": len(task_usable),
+        "holdout_accuracy": holdout_accuracy,
+        "holdout_money": money,
+    }
+    report = {
+        "examples": len(task_usable),
+        "classes": classes,
+        "class_counts": class_counts,
+        "models": [item["name"] for item in models],
+        "holdout_accuracy": holdout_accuracy,
+        **money,
+    }
+    return head, report
+
+
+def _balance_entry_examples(
+    examples: list[FeedbackExample],
+    config: ClassBalanceConfig,
+) -> tuple[list[FeedbackExample], dict[str, Any]]:
+    original_counts = _target_counts(examples)
+    summary = {
+        "enabled": bool(config.enabled),
+        "train_two_stage": bool(config.train_two_stage),
+        "original_class_counts": original_counts,
+        "balanced_class_counts": original_counts,
+        "flat_downsample_ratio": config.flat_downsample_ratio,
+        "max_flat_share_after_balance": config.max_flat_share_after_balance,
+        "min_directional_examples": config.min_directional_examples,
+    }
+    if not config.enabled:
+        return examples, summary
+    directional = [item for item in examples if item.target in DIRECTION_TARGETS]
+    flat = [item for item in examples if item.target == "flat"]
+    if len(directional) < config.min_directional_examples:
+        summary["status"] = "directional_examples_below_min"
+        return examples, summary
+    ratio_cap = int(math.ceil(len(directional) * max(config.flat_downsample_ratio, 0.0)))
+    if 0.0 < config.max_flat_share_after_balance < 1.0:
+        share_cap = int(
+            math.floor(
+                config.max_flat_share_after_balance
+                * len(directional)
+                / (1.0 - config.max_flat_share_after_balance)
+            )
+        )
+        flat_limit = min(len(flat), ratio_cap, share_cap)
+    else:
+        flat_limit = min(len(flat), ratio_cap)
+    selected_flat = _sort_examples(flat)[-max(0, flat_limit):] if flat_limit > 0 else []
+    balanced = _sort_examples(directional + selected_flat)
+    summary["status"] = "balanced"
+    summary["balanced_class_counts"] = _target_counts(balanced)
+    summary["dropped_flat_examples"] = max(0, len(flat) - len(selected_flat))
+    return balanced, summary
+
+
+def _opportunity_examples(examples: list[FeedbackExample]) -> list[FeedbackExample]:
+    result: list[FeedbackExample] = []
+    for item in examples:
+        if item.target not in ENTRY_TARGETS:
+            continue
+        target = "trade" if item.target in DIRECTION_TARGETS else "no_trade"
+        result.append(
+            FeedbackExample(
+                label=item.label,
+                target=target,
+                features=item.features,
+                source=item.source,
+                timestamp=item.timestamp,
+                task="opportunity",
+                pnl_pct=item.pnl_pct,
+                outcomes=item.outcomes,
+                feature_complete=item.feature_complete,
+                label_matured=item.label_matured,
+                market_data_trusted=item.market_data_trusted,
+                reject_reason=item.reject_reason,
+            )
+        )
+    return result
+
+
+def _target_counts(examples: list[FeedbackExample]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in examples:
+        counts[item.target] = counts.get(item.target, 0) + 1
+    return counts
+
+
+def _sort_examples(examples: list[FeedbackExample]) -> list[FeedbackExample]:
+    return sorted(
+        examples,
+        key=lambda item: (item.timestamp or "", item.source, item.label, item.target),
+    )
 
 
 def _dataset_hash(examples: list[FeedbackExample]) -> str:
@@ -410,6 +630,7 @@ def _train_models(
     y: pd.Series,
     *,
     include_heavy: bool | None = None,
+    use_class_weights: bool = True,
 ) -> list[dict[str, Any]]:
     models: list[dict[str, Any]] = []
     counts = y.value_counts()
@@ -418,7 +639,11 @@ def _train_models(
 
     logistic = make_pipeline(
         StandardScaler(),
-        LogisticRegression(max_iter=2000, class_weight="balanced", random_state=17),
+        LogisticRegression(
+            max_iter=2000,
+            class_weight="balanced" if use_class_weights else None,
+            random_state=17,
+        ),
     )
     if min_class_count >= 3 and len(y) >= 18:
         cv = min(3, min_class_count)
@@ -440,7 +665,7 @@ def _train_models(
             num_leaves=12,
             subsample=0.9,
             colsample_bytree=0.9,
-            class_weight="balanced",
+            class_weight="balanced" if use_class_weights else None,
             random_state=17,
             verbosity=-1,
         )
@@ -524,6 +749,8 @@ def _holdout_accuracy(
     y: pd.Series,
     models: list[dict[str, Any]],
     classes: list[str],
+    *,
+    use_class_weights: bool = True,
 ) -> float | None:
     if len(y) < 24 or y.nunique() < 2:
         return None
@@ -532,7 +759,12 @@ def _holdout_accuracy(
     for train_idx, test_idx in split.split(x):
         if y.iloc[train_idx].nunique() < 2 or y.iloc[test_idx].empty:
             continue
-        local_models = _train_models(x.iloc[train_idx], y.iloc[train_idx], include_heavy=False)
+        local_models = _train_models(
+            x.iloc[train_idx],
+            y.iloc[train_idx],
+            include_heavy=False,
+            use_class_weights=use_class_weights,
+        )
         if not local_models:
             continue
         correct = 0
@@ -554,6 +786,8 @@ def _holdout_money_metrics(
     x: pd.DataFrame,
     examples: list[FeedbackExample],
     classes: list[str],
+    *,
+    use_class_weights: bool = True,
 ) -> dict[str, float | int | None]:
     if len(examples) < 24 or len(classes) < 2:
         return {
@@ -568,7 +802,12 @@ def _holdout_money_metrics(
     for train_idx, test_idx in split.split(x):
         if y.iloc[train_idx].nunique() < 2 or y.iloc[test_idx].empty:
             continue
-        local_models = _train_models(x.iloc[train_idx], y.iloc[train_idx], include_heavy=False)
+        local_models = _train_models(
+            x.iloc[train_idx],
+            y.iloc[train_idx],
+            include_heavy=False,
+            use_class_weights=use_class_weights,
+        )
         if not local_models:
             continue
         for row_idx in test_idx:

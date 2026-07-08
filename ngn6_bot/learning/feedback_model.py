@@ -62,8 +62,11 @@ SIDEWAYS_TARGETS = {"sideways", "no_trade", "flat", "range", "weak_bounce"}
 EXIT_TARGETS = {"exit", "exit_by_orderbook", "exit_zone", "take_profit", "close"}
 WEAK_ENTRY_TARGETS = {"weak_long", "weak_bounce", "sideways", "no_trade", "flat", "range"}
 TRAINABLE_TARGETS = ENTRY_TARGETS | EXIT_CONTROL_TARGETS
+OPPORTUNITY_TARGETS = {"trade", "no_trade"}
+DIRECTION_TARGETS = {"long", "short"}
 CONTROL_MODES = {"control", "shadow_then_control"}
 APPROVED_PROMOTION_STATUS = "approved"
+FEATURE_SCHEMA_VERSION = 2
 
 
 FEATURE_KEYS = [
@@ -74,7 +77,19 @@ FEATURE_KEYS = [
     "ema_fast_distance",
     "ema_slow_distance",
     "ema_spread",
+    "ema_fast",
+    "ema_slow",
     "ema_fast_slope_3",
+    "adx",
+    "adx_slope",
+    "plus_di",
+    "minus_di",
+    "atr",
+    "atr_pct",
+    "macd",
+    "macd_signal",
+    "macd_hist",
+    "trend_strength",
     "bb_width",
     "bb_position",
     "rsi_centered",
@@ -105,6 +120,16 @@ FEATURE_KEYS = [
     "hour_sin",
     "hour_cos",
 ]
+
+
+@dataclass(frozen=True)
+class ClassBalanceConfig:
+    enabled: bool = False
+    train_two_stage: bool = False
+    flat_downsample_ratio: float = 4.0
+    use_class_weights: bool = True
+    min_directional_examples: int = 100
+    max_flat_share_after_balance: float = 0.70
 
 
 @dataclass(frozen=True)
@@ -181,6 +206,7 @@ class FeedbackConfig:
     promotion_max_drawdown_abs_pct: float = 8.0
     promotion_min_backtest_improvement_pct: float = 0.25
     max_examples: int = 5000
+    class_balance: ClassBalanceConfig = ClassBalanceConfig()
 
     @classmethod
     def from_runtime_config(cls, config) -> FeedbackConfig:
@@ -188,6 +214,7 @@ class FeedbackConfig:
         promotion = config.get("promotion", default={}) or {}
         training = config.get("training", default={}) or {}
         shadow = config.get("shadow", default={}) or {}
+        class_balance = raw.get("class_balance", {}) or {}
         legacy_csv = raw.get("legacy_labels_csv", "reports/labels.csv")
         oracle_csv = raw.get("oracle_labels_csv", "reports/daily_oracle/latest_oracle_labels.csv")
         return cls(
@@ -359,6 +386,16 @@ class FeedbackConfig:
                 raw.get("promotion_min_backtest_improvement_pct", 0.25)
             ),
             max_examples=int(raw.get("max_examples", 5000)),
+            class_balance=ClassBalanceConfig(
+                enabled=bool(class_balance.get("enabled", False)),
+                train_two_stage=bool(class_balance.get("train_two_stage", False)),
+                flat_downsample_ratio=float(class_balance.get("flat_downsample_ratio", 4.0)),
+                use_class_weights=bool(class_balance.get("use_class_weights", True)),
+                min_directional_examples=int(class_balance.get("min_directional_examples", 100)),
+                max_flat_share_after_balance=float(
+                    class_balance.get("max_flat_share_after_balance", 0.70)
+                ),
+            ),
         )
 
 
@@ -372,6 +409,10 @@ class FeedbackExample:
     task: str = "entry"
     pnl_pct: float = 0.0
     outcomes: dict[str, float] | None = None
+    feature_complete: bool = True
+    label_matured: bool = True
+    market_data_trusted: bool = True
+    reject_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -983,10 +1024,14 @@ def build_feature_snapshot(
     trade_flow: TradeFlowFeatures,
     now: datetime,
 ) -> dict[str, float]:
+    execution_df = _closed_frame(execution_df, now)
+    confirmation_df = _closed_frame(confirmation_df, now)
+    context_df = _closed_frame(context_df, now)
     if execution_df.empty:
         return _time_features(now)
 
     row = execution_df.iloc[-1]
+    previous_row = execution_df.iloc[-2] if len(execution_df) >= 2 else row
     close = _safe_float(row.get("close"))
     open_ = _safe_float(row.get("open"))
     high = _safe_float(row.get("high"))
@@ -995,6 +1040,14 @@ def build_feature_snapshot(
     volume_ma = _safe_float(row.get("volume_ma"))
     ema_fast = _safe_float(row.get("ema_fast"))
     ema_slow = _safe_float(row.get("ema_slow"))
+    adx_value = _safe_float(row.get("adx"))
+    previous_adx = _safe_float(previous_row.get("adx"), adx_value)
+    plus_di = _safe_float(row.get("plus_di"))
+    minus_di = _safe_float(row.get("minus_di"))
+    atr_value = _safe_float(row.get("atr"))
+    macd_value = _safe_float(row.get("macd"))
+    macd_signal = _safe_float(row.get("macd_signal"))
+    macd_hist = _safe_float(row.get("macd_hist"))
     bb_upper = _safe_float(row.get("bb_upper"))
     bb_lower = _safe_float(row.get("bb_lower"))
     bb_width = _safe_float(row.get("bb_width_pct"))
@@ -1011,7 +1064,19 @@ def build_feature_snapshot(
         "ema_fast_distance": _clip(_pct(ema_fast, close), -0.03, 0.03) / 0.03,
         "ema_slow_distance": _clip(_pct(ema_slow, close), -0.04, 0.04) / 0.04,
         "ema_spread": _clip(_pct(ema_slow, ema_fast), -0.025, 0.025) / 0.025,
+        "ema_fast": _clip(_pct(close, ema_fast), -0.04, 0.04) / 0.04,
+        "ema_slow": _clip(_pct(close, ema_slow), -0.04, 0.04) / 0.04,
         "ema_fast_slope_3": _normalized_slope(execution_df, "ema_fast", 3),
+        "adx": _clip(adx_value / 100.0, 0.0, 1.0),
+        "adx_slope": _clip((adx_value - previous_adx) / 100.0, -1.0, 1.0),
+        "plus_di": _clip(plus_di / 100.0, 0.0, 1.0),
+        "minus_di": _clip(minus_di / 100.0, 0.0, 1.0),
+        "atr": _clip(atr_value / max(close, 1e-12), 0.0, 0.05) / 0.05,
+        "atr_pct": _clip(_pct(close, close + atr_value), 0.0, 0.05) / 0.05,
+        "macd": _clip(macd_value / max(close, 1e-12), -0.03, 0.03) / 0.03,
+        "macd_signal": _clip(macd_signal / max(close, 1e-12), -0.03, 0.03) / 0.03,
+        "macd_hist": _clip(macd_hist / max(close, 1e-12), -0.02, 0.02) / 0.02,
+        "trend_strength": _clip(abs(ema_fast - ema_slow) / max(close, 1e-12), 0.0, 0.05) / 0.05,
         "bb_width": _clip(bb_width / 4.0, 0.0, 2.0) / 2.0,
         "bb_position": _range_position(close, bb_lower, bb_upper) * 2 - 1,
         "rsi_centered": _clip((rsi - 50.0) / 50.0, -1.0, 1.0),
@@ -1053,6 +1118,22 @@ def build_feature_snapshot(
         **_time_features(now),
     }
     return {key: float(value) for key, value in features.items() if math.isfinite(float(value))}
+
+
+def _closed_frame(frame: pd.DataFrame, now: datetime) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+    if not isinstance(frame.index, pd.DatetimeIndex):
+        return frame
+    timestamp = pd.Timestamp(now)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize("UTC")
+    index = frame.index
+    if index.tz is None:
+        timestamp = timestamp.tz_convert("UTC").tz_localize(None)
+    else:
+        timestamp = timestamp.tz_convert(index.tz)
+    return frame.loc[index <= timestamp]
 
 
 def feature_similarity(left: dict[str, float], right: dict[str, float]) -> float:
@@ -1162,6 +1243,14 @@ def _example_from_payload(payload: dict[str, Any], source: str) -> FeedbackExamp
         task=task,
         pnl_pct=_safe_float(payload.get("pnl_pct")),
         outcomes=parsed_outcomes,
+        feature_complete=bool(payload.get("feature_complete", True)),
+        label_matured=bool(payload.get("label_matured", payload.get("matured", True))),
+        market_data_trusted=bool(payload.get("market_data_trusted", True)),
+        reject_reason=(
+            str(payload.get("reject_reason"))
+            if payload.get("reject_reason") is not None
+            else None
+        ),
     )
 
 

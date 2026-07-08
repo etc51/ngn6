@@ -18,6 +18,7 @@ from ngn6_bot.learning.ensemble import (
     train_feedback_ensemble,
 )
 from ngn6_bot.learning.feedback_model import (
+    FEATURE_KEYS,
     FeedbackConfig,
     FeedbackExample,
     build_feature_snapshot,
@@ -59,6 +60,7 @@ def train_feedback_from_api(
             examples,
             output_path=candidate_path,
             min_examples=minimum,
+            class_balance=feedback_config.class_balance,
         )
         promotion = _promotion_decision(
             report=report,
@@ -92,7 +94,12 @@ def train_feedback_from_api(
             report = replace(report, promoted=False)
         _write_training_report(report, _training_report_path(target_path))
     else:
-        report = train_feedback_ensemble(examples, output_path=target_path, min_examples=minimum)
+        report = train_feedback_ensemble(
+            examples,
+            output_path=target_path,
+            min_examples=minimum,
+            class_balance=feedback_config.class_balance,
+        )
         _write_training_report(report, _training_report_path(target_path))
     return FeedbackTrainingResult(
         figi=figi,
@@ -276,7 +283,10 @@ def _decision_examples(config: RuntimeConfig) -> list[FeedbackExample]:
             except json.JSONDecodeError:
                 continue
             features = _decision_features(item)
-            if not features:
+            quality = _decision_quality(item, features)
+            if not quality["feature_complete"]:
+                continue
+            if not quality["label_matured"] or not quality["market_data_trusted"]:
                 continue
             action = str(item.get("action") or "").lower()
             side = str(item.get("side") or "").lower()
@@ -292,6 +302,10 @@ def _decision_examples(config: RuntimeConfig) -> list[FeedbackExample]:
                     source=str(path),
                     timestamp=str(item.get("timestamp") or "") or None,
                     task=task,
+                    feature_complete=quality["feature_complete"],
+                    label_matured=quality["label_matured"],
+                    market_data_trusted=quality["market_data_trusted"],
+                    reject_reason=quality["reject_reason"],
                 )
             )
     return examples
@@ -312,6 +326,44 @@ def _decision_features(item: dict) -> dict[str, float]:
                     continue
             return features
     return {}
+
+
+def _decision_quality(item: dict, features: dict[str, float]) -> dict[str, bool | str | None]:
+    reason = str(item.get("reason") or item.get("reject_reason") or "")
+    feature_complete = bool(item.get("feature_complete", False)) and bool(features)
+    missing_fields = [
+        key
+        for key in FEATURE_KEYS
+        if key not in features
+    ]
+    if missing_fields:
+        feature_complete = False
+    market_data_trusted = bool(item.get("market_data_trusted", False))
+    if not market_data_trusted and isinstance(item.get("market_context"), dict):
+        orderbook = item["market_context"].get("orderbook") or {}
+        source = str(orderbook.get("source") or "")
+        age = orderbook.get("age_seconds")
+        try:
+            age_ok = age is not None and float(age) <= 10.0
+        except (TypeError, ValueError):
+            age_ok = False
+        market_data_trusted = source == "live" and age_ok
+    if "stale" in reason.lower() or "untrusted" in reason.lower():
+        market_data_trusted = False
+    label_matured = bool(item.get("label_matured", False))
+    reject_reason = None
+    if not feature_complete:
+        reject_reason = "missing_features"
+    elif not label_matured:
+        reject_reason = "label_not_matured"
+    elif not market_data_trusted:
+        reject_reason = "market_data_not_trusted"
+    return {
+        "feature_complete": feature_complete,
+        "label_matured": label_matured,
+        "market_data_trusted": market_data_trusted,
+        "reject_reason": reject_reason,
+    }
 
 
 def _decision_target(action: str, side: str) -> str | None:
@@ -340,6 +392,11 @@ def _indicator_frames(config: RuntimeConfig, candles_1m: list[Candle]):
             ema_fast=int(config.get("indicators", "ema_fast")),
             ema_slow=int(config.get("indicators", "ema_slow")),
             rsi_period=int(config.get("indicators", "rsi_period")),
+            atr_period=int(config.get("indicators", "atr_period", default=14)),
+            adx_period=int(config.get("indicators", "adx_period", default=14)),
+            macd_fast=int(config.get("indicators", "macd_fast", default=12)),
+            macd_slow=int(config.get("indicators", "macd_slow", default=26)),
+            macd_signal=int(config.get("indicators", "macd_signal", default=9)),
             bollinger_period=int(config.get("indicators", "bollinger_period")),
             bollinger_std=float(config.get("indicators", "bollinger_std")),
             volume_ma_period=int(config.get("indicators", "volume_ma_period")),
@@ -384,10 +441,11 @@ def _aggregate_candles(candles: list[Candle], timeframe: str) -> list[Candle]:
         timestamp = _utc(candle.timestamp)
         bucket_minute = timestamp.minute - (timestamp.minute % minutes)
         bucket_start = timestamp.replace(minute=bucket_minute, second=0, microsecond=0)
+        bucket_close = bucket_start + timedelta(minutes=minutes)
         existing = aggregated.get(bucket_start)
         if existing is None:
             aggregated[bucket_start] = Candle(
-                timestamp=bucket_start,
+                timestamp=bucket_close,
                 open=candle.open,
                 high=candle.high,
                 low=candle.low,
@@ -397,7 +455,7 @@ def _aggregate_candles(candles: list[Candle], timeframe: str) -> list[Candle]:
             )
             continue
         aggregated[bucket_start] = Candle(
-            timestamp=bucket_start,
+            timestamp=bucket_close,
             open=existing.open,
             high=max(existing.high, candle.high),
             low=min(existing.low, candle.low),

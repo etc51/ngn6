@@ -77,6 +77,7 @@ def evaluate_shadow_predictions(
     )
     predictions = _load_shadow_predictions(decision_file)
     labels = _load_labels(label_file, ZoneInfo(config.timezone)) if label_file.exists() else []
+    as_of = datetime.now(ZoneInfo("UTC"))
     trade_predictions = [item for item in predictions if item.target in {"long", "short"}]
     trade_days = {
         item.timestamp.astimezone(ZoneInfo(config.timezone)).date().isoformat()
@@ -88,7 +89,7 @@ def evaluate_shadow_predictions(
     matched_trade_labels = 0
     for prediction in predictions:
         label = _label_for_timestamp(prediction.timestamp, labels)
-        if label is None:
+        if label is None or label.end > as_of:
             continue
         matured += 1
         if prediction.target not in {"long", "short"}:

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ngn6_bot.config import RuntimeConfig
+from ngn6_bot.learning.feedback_model import FEATURE_SCHEMA_VERSION
 from ngn6_bot.models import Position, Signal
 from ngn6_bot.runtime_metadata import add_commit_hash
 
@@ -68,6 +69,9 @@ class StrategyRecorder:
         position: Position,
         orderbook_snapshot: Any | None = None,
         recent_trades: list[Any] | None = None,
+        market_data_trusted: bool | None = None,
+        market_data_trust_reason: str | None = None,
+        market_data_trust_details: dict[str, Any] | None = None,
     ) -> None:
         if not self.enabled:
             return
@@ -80,6 +84,9 @@ class StrategyRecorder:
             "trade_flow": _to_jsonable(trade_flow),
             "candle_counts": candle_counts,
             "position": _position_payload(position),
+            "market_data_trusted": market_data_trusted,
+            "market_data_trust_reason": market_data_trust_reason,
+            "market_data_trust_details": _to_jsonable(market_data_trust_details or {}),
         }
         if self.record_raw_microstructure:
             payload["orderbook_snapshot"] = _to_jsonable(orderbook_snapshot)
@@ -111,6 +118,7 @@ class StrategyRecorder:
             "final_action": action,
             "reject_reason": reason if action in {"skip", "open_rejected", "close_rejected"} else None,
             "details": details or {},
+            "label_matured": bool((details or {}).get("label_matured", False)),
         }
         if signal is not None:
             payload.update(
@@ -200,6 +208,16 @@ def _decision_flat_fields(
         features = metadata.get("features")
     if features is None and market_context:
         features = market_context.get("features")
+    feature_complete = (
+        bool(market_context.get("feature_complete"))
+        if isinstance(market_context, dict)
+        else isinstance(features, dict)
+    )
+    market_data_trusted = (
+        bool(market_context.get("market_data_trusted"))
+        if isinstance(market_context, dict)
+        else None
+    )
     flat = {
         "position_state": position.side.value if position is not None else None,
         "base_signal": signal.reason if signal is not None else None,
@@ -209,9 +227,17 @@ def _decision_flat_fields(
         "ml_expected_R": metadata.get("expected_R") if isinstance(metadata, dict) else None,
         "risk_gate_result": details.get("risk_gate_result"),
         "features_hash": _features_hash(features),
+        "feature_complete": feature_complete,
+        "feature_timestamp": market_context.get("feature_timestamp") if market_context else None,
+        "missing_feature_fields": market_context.get("missing_feature_fields") if market_context else None,
+        "feature_reject_reason": market_context.get("feature_reject_reason") if market_context else None,
+        "market_data_trusted": market_data_trusted,
+        "market_data_trust_reason": market_context.get("market_data_trust_reason")
+        if market_context
+        else None,
         "feature_schema_version": model_validation.get("feature_schema_version")
         if model_validation
-        else None,
+        else FEATURE_SCHEMA_VERSION if feature_complete else None,
     }
     if isinstance(feedback, dict):
         probabilities = {item.get("target"): item.get("score") for item in feedback.get("alternatives", [])}
