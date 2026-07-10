@@ -77,7 +77,11 @@ learning:
     - opportunity
     - direction
     - exit
-  candidate_can_trade: false
+  # Candidate execution is restricted by code to dry-run paper mode only.
+  candidate_can_trade: true
+  candidate_execution_entry_threshold: 0.25
+  candidate_execution_max_neutral_probability: 0.45
+  candidate_execution_min_directional_edge: 0.05
   active_can_trade_only_if_promoted: true
   entry_threshold: 0.68
   exit_threshold: 0.58

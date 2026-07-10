@@ -133,6 +133,43 @@ def test_candidate_cannot_trade_when_active_is_not_eligible():
     assert signal.metadata["candidate_shadow"]["can_trade"] is False
 
 
+def test_candidate_can_execute_only_when_explicitly_allowed_for_paper():
+    model = FeedbackModel(
+        FeedbackConfig(
+            enabled=True,
+            mode="shadow_then_control",
+            control_require_ensemble_model=True,
+            control_require_promoted_model=True,
+            ensemble_enabled=False,
+            candidate_can_trade=True,
+            candidate_execution_entry_threshold=0.25,
+        ),
+        [],
+    )
+    model.ensemble = SimpleNamespace(
+        schema_version=1,
+        heads={"entry": {"classes": ["long", "short", "flat"], "examples": 6000}},
+        promotion_score=1.0,
+    )
+    model.candidate_ensemble = _CandidateLong()
+
+    signal = model.signal_from_prediction(
+        execution_df=_frame(),
+        confirmation_df=_frame(),
+        context_df=_frame(),
+        orderbook=OrderBookFeatures(101, 101.1, 101.05, 1.0, 0.62),
+        trade_flow=TradeFlowFeatures(),
+        now=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
+        price=101.0,
+        allow_candidate=True,
+    )
+
+    assert signal.side == Side.LONG
+    assert signal.reason.startswith("ml_entry:long")
+    assert signal.metadata["candidate_execution"] is True
+    assert signal.metadata["strategy"] == "ml_candidate_paper"
+
+
 def test_no_fallback_when_ml_not_ready():
     config = load_config("config/ngn6.yaml")
     bot = TradingBot(config, logging.getLogger("test"), runtime_services=False)

@@ -256,6 +256,7 @@ class TradingBot:
                     orderbook=orderbook_features,
                     trade_flow=trade_flow,
                     now=now,
+                    allow_candidate=self._paper_candidate_execution_enabled(),
                 )
             else:
                 flip_signal = generate_signal(
@@ -335,6 +336,7 @@ class TradingBot:
                 trade_flow=trade_flow,
                 now=now,
                 price=last_price,
+                allow_candidate=self._paper_candidate_execution_enabled(),
             )
         else:
             signal = generate_signal(
@@ -1328,11 +1330,22 @@ class TradingBot:
             self.config.get("execution", "allow_trade_without_promoted_model", default=False)
         ):
             ready, model_reason, _ = self.feedback_model.control_model_validation()
-            if not ready:
+            candidate_execution = bool(
+                signal.metadata.get("candidate_execution")
+                and self._paper_candidate_execution_enabled()
+            )
+            if not ready and not candidate_execution:
                 return "ml_not_ready_no_fallback"
-            if not reason.startswith("ml_entry"):
+            if not candidate_execution and not reason.startswith("ml_entry"):
                 return "non_ml_entry_without_promoted_consensus_disabled"
         return None
+
+    def _paper_candidate_execution_enabled(self) -> bool:
+        return bool(
+            self.config.dry_run
+            and not self.config.live_enabled
+            and self.config.get("learning", "candidate_can_trade", default=False)
+        )
 
     def _ml_control_enabled(self) -> bool:
         return bool(self.config.get("learning", "enabled", default=False)) and str(
@@ -1486,9 +1499,13 @@ class TradingBot:
         ):
             ready, model_reason, model_details = self.feedback_model.control_model_validation()
             details["model_validation"] = {"ready": ready, "reason": model_reason, **model_details}
-            if not ready:
+            candidate_execution = bool(
+                signal.metadata.get("candidate_execution")
+                and self._paper_candidate_execution_enabled()
+            )
+            if not ready and not candidate_execution:
                 return "ml_not_ready_no_fallback", details
-            if not str(signal.reason).lower().startswith("ml_entry"):
+            if not candidate_execution and not str(signal.reason).lower().startswith("ml_entry"):
                 return "non_ml_entry_without_promoted_consensus_disabled", details
 
         return None, details

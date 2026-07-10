@@ -160,6 +160,9 @@ class FeedbackConfig:
     active_required_schema: int = 2
     required_heads: tuple[str, ...] = ("entry", "exit")
     candidate_can_trade: bool = False
+    candidate_execution_entry_threshold: float = 0.25
+    candidate_execution_max_neutral_probability: float = 0.45
+    candidate_execution_min_directional_edge: float = 0.05
     active_can_trade_only_if_promoted: bool = True
     min_entry_examples: int = 0
     min_exit_examples: int = 0
@@ -285,6 +288,15 @@ class FeedbackConfig:
                 )
             ),
             candidate_can_trade=bool(raw.get("candidate_can_trade", False)),
+            candidate_execution_entry_threshold=float(
+                raw.get("candidate_execution_entry_threshold", 0.25)
+            ),
+            candidate_execution_max_neutral_probability=float(
+                raw.get("candidate_execution_max_neutral_probability", 0.45)
+            ),
+            candidate_execution_min_directional_edge=float(
+                raw.get("candidate_execution_min_directional_edge", 0.05)
+            ),
             active_can_trade_only_if_promoted=bool(
                 raw.get("active_can_trade_only_if_promoted", True)
             ),
@@ -773,6 +785,7 @@ class FeedbackModel:
         trade_flow: TradeFlowFeatures,
         now: datetime,
         price: float,
+        allow_candidate: bool = False,
     ) -> Signal:
         features = build_feature_snapshot(
             execution_df=execution_df,
@@ -784,7 +797,12 @@ class FeedbackModel:
         )
         shadow_prediction = self.candidate_shadow_prediction(features, task="entry")
         model_ready, model_reason, model_details = self.control_model_validation()
-        if not model_ready:
+        candidate_execution = bool(
+            allow_candidate
+            and self.config.candidate_can_trade
+            and self.candidate_ensemble is not None
+        )
+        if not model_ready and not candidate_execution:
             metadata = {
                 "strategy": "ml_control",
                 "model_validation": {
@@ -805,11 +823,16 @@ class FeedbackModel:
                 metadata=metadata,
             )
 
-        prediction = self.predict(features, task="entry")
+        prediction = (
+            self._candidate_prediction(features, task="entry")
+            if candidate_execution
+            else self.predict(features, task="entry")
+        )
         metadata = {
-            "strategy": "ml_control",
+            "strategy": "ml_candidate_paper" if candidate_execution else "ml_control",
+            "candidate_execution": candidate_execution,
             "model_validation": {
-                "ready": True,
+                "ready": model_ready,
                 "reason": model_reason,
                 **model_details,
             },
@@ -865,7 +888,22 @@ class FeedbackModel:
             "opposite_score": round(opposite_score, 4),
             "directional_edge": round(directional_edge, 4),
         }
-        if neutral_score > self.config.control_max_neutral_probability:
+        max_neutral_probability = (
+            self.config.candidate_execution_max_neutral_probability
+            if candidate_execution
+            else self.config.control_max_neutral_probability
+        )
+        min_directional_edge = (
+            self.config.candidate_execution_min_directional_edge
+            if candidate_execution
+            else self.config.control_min_directional_edge
+        )
+        entry_threshold = (
+            self.config.candidate_execution_entry_threshold
+            if candidate_execution
+            else self.config.control_entry_threshold
+        )
+        if neutral_score > max_neutral_probability:
             return Signal(
                 Side.FLAT,
                 prediction.score,
@@ -878,7 +916,7 @@ class FeedbackModel:
                 now,
                 metadata=metadata,
             )
-        if directional_edge < self.config.control_min_directional_edge:
+        if directional_edge < min_directional_edge:
             return Signal(
                 Side.FLAT,
                 prediction.score,
@@ -893,7 +931,7 @@ class FeedbackModel:
             )
         is_primary = (
             prediction.target == exploration_target
-            and prediction.score >= self.config.control_entry_threshold
+            and prediction.score >= entry_threshold
         )
         is_exploration = (
             not is_primary
@@ -917,7 +955,7 @@ class FeedbackModel:
                 "exploration": True,
                 "exploration_target": exploration_target,
                 "exploration_score": round(exploration_score, 4),
-                "primary_entry_threshold": self.config.control_entry_threshold,
+                "primary_entry_threshold": entry_threshold,
                 "exploration_entry_threshold": self.config.exploration_entry_threshold,
             }
 
@@ -944,6 +982,24 @@ class FeedbackModel:
             metadata=metadata,
         )
 
+    def _candidate_prediction(
+        self, features: dict[str, float], *, task: str
+    ) -> FeedbackPrediction:
+        if self.candidate_ensemble is None:
+            return FeedbackPrediction("unknown", 0.0, 0, [], "candidate_model_missing")
+        prediction = self.candidate_ensemble.predict(features, task=task)
+        return FeedbackPrediction(
+            target=prediction.target,
+            score=prediction.score,
+            examples=prediction.examples,
+            nearest=[
+                {"model": name, "score": score}
+                for name, score in prediction.model_scores.items()
+            ],
+            reason=prediction.reason,
+            alternatives=_alternatives_from_probabilities(prediction.probabilities),
+        )
+
     def exit_reason_from_prediction(
         self,
         *,
@@ -954,6 +1010,7 @@ class FeedbackModel:
         orderbook: OrderBookFeatures,
         trade_flow: TradeFlowFeatures,
         now: datetime,
+        allow_candidate: bool = False,
     ) -> tuple[str | None, FeedbackPrediction]:
         features = build_feature_snapshot(
             execution_df=execution_df,
@@ -964,9 +1021,22 @@ class FeedbackModel:
             now=now,
         )
         features["position_side"] = _position_side_value(position_side)
-        prediction = self.predict(features, task="exit")
+        candidate_execution = bool(
+            allow_candidate
+            and self.config.candidate_can_trade
+            and self.candidate_ensemble is not None
+        )
+        prediction = (
+            self._candidate_prediction(features, task="exit")
+            if candidate_execution
+            else self.predict(features, task="exit")
+        )
         if prediction.target == "unknown" and prediction.reason == "no_exit_head":
-            prediction = self.predict(features, task="entry")
+            prediction = (
+                self._candidate_prediction(features, task="entry")
+                if candidate_execution
+                else self.predict(features, task="entry")
+            )
         if prediction.target == "unknown" or prediction.score < self.config.control_exit_threshold:
             return None, prediction
         if prediction.target == "exit":
