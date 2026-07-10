@@ -19,21 +19,7 @@ def test_closed_paper_loss_becomes_matured_flat_label(tmp_path):
     opened_at = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
     closed_at = opened_at + timedelta(minutes=5)
     features = {"return_1": 0.1, "adx": 0.4, "position_side": 0.0}
-    decisions.write_text(
-        json.dumps(
-            {
-                "decision_id": "entry-1",
-                "timestamp": (opened_at + timedelta(seconds=1)).isoformat(),
-                "action": "open_accepted",
-                "side": "long",
-                "feature_complete": True,
-                "market_data_trusted": True,
-                "metadata": {"features": features},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    decisions.write_text("", encoding="utf-8")
     events.write_text(
         "\n".join(
             [
@@ -47,6 +33,12 @@ def test_closed_paper_loss_becomes_matured_flat_label(tmp_path):
                             "price": 3.0,
                             "reason": "ml_entry:long",
                             "commission": 1.0,
+                            "feedback_context": {
+                                "features": features,
+                                "feature_complete": True,
+                                "market_data_trusted": True,
+                                "candidate_execution": True,
+                            },
                         },
                     }
                 ),

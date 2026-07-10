@@ -173,6 +173,7 @@ class PaperPortfolio:
         reason: str,
         take_profit1: float | None = None,
         take_profit2: float | None = None,
+        feedback_context: dict[str, Any] | None = None,
         timestamp: datetime | None = None,
     ) -> tuple[bool, int, str]:
         timestamp = timestamp or datetime.now(timezone.utc)
@@ -238,6 +239,7 @@ class PaperPortfolio:
                 "take_profit2": take_profit2,
                 "reason": event_reason,
                 "commission": commission,
+                "feedback_context": feedback_context or {},
             },
         )
         return True, accepted_lots, event_reason

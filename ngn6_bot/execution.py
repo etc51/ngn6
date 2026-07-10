@@ -50,6 +50,14 @@ class BrokerExecutor:
                     take_profit1=signal.take_profit1,
                     take_profit2=signal.take_profit2,
                     reason=signal.reason,
+                    feedback_context={
+                        "features": signal.metadata.get("features", {}),
+                        "feature_complete": bool(signal.metadata.get("features")),
+                        "market_data_trusted": True,
+                        "strategy": signal.metadata.get("strategy"),
+                        "candidate_execution": signal.metadata.get("candidate_execution", False),
+                        "feedback": signal.metadata.get("feedback", {}),
+                    },
                     timestamp=datetime.now(timezone.utc),
                 )
             self.logger.info(

@@ -47,8 +47,12 @@ def sync_paper_trade_feedback(config: RuntimeConfig) -> PaperFeedbackSyncReport:
         )
         notional_multiplier = step_value / min_increment if min_increment > 0 else 0.0
 
-    decisions = _entry_decisions(decisions_path, started_at)
     trades = _completed_trades(events_path, started_at, notional_multiplier)
+    decisions = (
+        _entry_decisions(decisions_path, started_at)
+        if any(not _trade_features(trade) for trade in trades)
+        else []
+    )
     existing = _read_jsonl(labels_path)
     existing_ids = {
         str(row.get("paper_trade_id"))
@@ -58,14 +62,18 @@ def sync_paper_trade_feedback(config: RuntimeConfig) -> PaperFeedbackSyncReport:
     added: list[dict[str, Any]] = []
     matched = 0
     for trade in trades:
-        decision = _nearest_entry_decision(trade, decisions)
-        if decision is None:
-            continue
+        feedback_context = trade.get("feedback_context") or {}
+        features = _trade_features(trade)
+        decision = None
+        if not features:
+            decision = _nearest_entry_decision(trade, decisions)
+            if decision is None:
+                continue
+            features = _decision_features(decision)
         matched += 1
         trade_id = str(trade["paper_trade_id"])
         if trade_id in existing_ids:
             continue
-        features = _decision_features(decision)
         if not features:
             continue
         side = str(trade["side"])
@@ -91,13 +99,21 @@ def sync_paper_trade_feedback(config: RuntimeConfig) -> PaperFeedbackSyncReport:
                     "net_pnl_pct": net_pct,
                     "net_pnl_rub": trade["net_pnl"],
                     "outcomes": {side: net_pct, "flat": 0.0},
-                    "feature_complete": bool(decision.get("feature_complete", True)),
+                    "feature_complete": bool(
+                        feedback_context.get(
+                            "feature_complete",
+                            decision.get("feature_complete", True) if decision else True,
+                        )
+                    ),
                     "label_matured": True,
                     "market_data_trusted": bool(
-                        decision.get("market_data_trusted", True)
+                        feedback_context.get(
+                            "market_data_trusted",
+                            decision.get("market_data_trusted", True) if decision else True,
+                        )
                     ),
                     "source": "paper_trade_outcome",
-                    "entry_decision_id": decision.get("decision_id"),
+                    "entry_decision_id": decision.get("decision_id") if decision else None,
                     "entry_reason": trade.get("entry_reason"),
                     "exit_reason": trade.get("exit_reason"),
                 }
@@ -160,6 +176,7 @@ def _completed_trades(
                 "lots": lots,
                 "entry_price": price,
                 "entry_reason": str(details.get("reason") or "unknown"),
+                "feedback_context": details.get("feedback_context") or {},
                 "net_pnl": -float(details.get("commission", 0.0) or 0.0),
             }
             continue
@@ -221,6 +238,17 @@ def _decision_features(row: dict[str, Any]) -> dict[str, float]:
                 if isinstance(value, (int, float))
             }
     return {}
+
+
+def _trade_features(trade: dict[str, Any]) -> dict[str, float]:
+    candidate = (trade.get("feedback_context") or {}).get("features")
+    if not isinstance(candidate, dict):
+        return {}
+    return {
+        str(key): float(value)
+        for key, value in candidate.items()
+        if isinstance(value, (int, float))
+    }
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
