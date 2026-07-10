@@ -25,6 +25,7 @@ from ngn6_bot.learning.feedback_model import (
     label_to_target,
     load_feedback_examples,
 )
+from ngn6_bot.learning.paper_feedback import sync_paper_trade_feedback
 from ngn6_bot.microstructure_replay import MicrostructureReplay, neutral_orderbook, neutral_trade_flow
 from ngn6_bot.models import Candle
 from ngn6_bot.runtime_metadata import add_commit_hash
@@ -116,6 +117,8 @@ def build_training_examples(
     feedback_config: FeedbackConfig | None = None,
 ) -> tuple[list[FeedbackExample], int]:
     active_config = feedback_config or FeedbackConfig.from_runtime_config(config)
+    if bool(config.get("learning", "paper_trade_feedback_enabled", default=False)):
+        sync_paper_trade_feedback(config)
     examples = load_feedback_examples(active_config)
     generated = 0
     if active_config.generate_pnl_examples:

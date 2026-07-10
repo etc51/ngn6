@@ -13,6 +13,7 @@ from ngn6_bot.execution import BrokerExecutor
 from ngn6_bot.indicators import add_indicators, candles_to_frame
 from ngn6_bot.learning.daily_oracle import DailyOracleScheduler
 from ngn6_bot.learning.feedback_model import FEATURE_KEYS, FeedbackModel, build_feature_snapshot
+from ngn6_bot.learning.paper_feedback import sync_paper_trade_feedback
 from ngn6_bot.models import MarketState, Side
 from ngn6_bot.orderbook import analyze_order_book, spread_is_acceptable
 from ngn6_bot.paper import PaperPortfolio
@@ -843,6 +844,36 @@ class TradingBot:
         if result.accepted:
             self._pending_exit_signal = None
         executor.apply_close(position, result)
+        if result.accepted and self.paper_portfolio is not None:
+            self._sync_paper_trade_feedback()
+
+    def _sync_paper_trade_feedback(self) -> None:
+        if not bool(
+            self.config.get("learning", "paper_trade_feedback_enabled", default=False)
+        ):
+            return
+        try:
+            report = sync_paper_trade_feedback(self.config)
+            self.logger.info(
+                "paper_trade_feedback_synced",
+                extra={
+                    "event": "paper_trade_feedback_synced",
+                    "details": {
+                        "completed_trades": report.completed_trades,
+                        "matched_entries": report.matched_entries,
+                        "labels_added": report.labels_added,
+                        "labels_total": report.labels_total,
+                    },
+                },
+            )
+        except Exception as exc:
+            self.logger.exception(
+                "paper_trade_feedback_sync_failed",
+                extra={
+                    "event": "paper_trade_feedback_sync_failed",
+                    "details": {"error": str(exc)},
+                },
+            )
 
     @staticmethod
     def _latest_exit_candle(context_df):

@@ -82,6 +82,9 @@ learning:
   candidate_execution_entry_threshold: 0.25
   candidate_execution_max_neutral_probability: 0.45
   candidate_execution_min_directional_edge: 0.05
+  paper_trade_feedback_enabled: true
+  paper_trade_feedback_started_at: "2026-07-10T16:55:00+00:00"
+  paper_trade_feedback_min_net_pct: 0.0
   active_can_trade_only_if_promoted: true
   entry_threshold: 0.68
   exit_threshold: 0.58

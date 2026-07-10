@@ -15,7 +15,8 @@ Machine-learning, labeling, validation, training, shadow evaluation, and promoti
 - `promotion.py` - explicit model promotion eligibility reports.
 
 ## Rules
-- Candidate models are not allowed to trade.
+- Candidate models may execute only in the explicit dry-run paper path; live execution remains blocked.
+- Closed paper trades are converted into matured outcome labels and consumed by scheduled retraining.
 - Active models must pass schema, head, class, sample, shadow, and OOS promotion gates.
 - Do not train on future information. Labels may use future candles; features must be rebuilt at label time only.
 - Keep promotion reports explainable: include counts, gates, reasons, and `commit_hash`.
