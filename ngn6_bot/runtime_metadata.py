@@ -33,7 +33,7 @@ def current_commit_hash() -> str:
 
 
 def add_commit_hash(payload: dict[str, Any]) -> dict[str, Any]:
-    payload.setdefault("commit_hash", current_commit_hash())
+    payload["commit_hash"] = current_commit_hash()
     return payload
 
 

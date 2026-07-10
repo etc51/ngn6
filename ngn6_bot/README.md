@@ -13,6 +13,7 @@ Main Python package for the NGN6 intraday paper-trading bot.
 - `risk.py`, `costs.py`, `execution.py`, `paper.py` - risk, cost, execution, and paper portfolio logic.
 - `recorder.py` - runtime JSONL writers for market structure and decisions.
 - `dashboard.py`, `review.py`, `charting.py` - local dashboard and chart/report generation.
+- `strategy_audit.py` - read-only per-trade paper forensics across decisions, candles, and microstructure.
 - `runtime_metadata.py` - commit-hash attribution for runtime reports.
 - `learning/` - ML, training, labels, promotion, shadow mode.
 - `monitoring/` - drift and monitoring helpers.
@@ -28,3 +29,4 @@ Main Python package for the NGN6 intraday paper-trading bot.
 - Full tests: `python -m pytest -q`
 - Lint: `ruff check .`
 - Smoke: `python -m ngn6_bot.cli smoke --config config/ngn6.yaml`
+- Strategy audit: `python -m ngn6_bot.cli strategy-audit --config config/ngn6.yaml --fetch-candles`

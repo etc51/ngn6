@@ -7,7 +7,7 @@ from ngn6_bot.backtest import BacktestMetrics, BacktestReport
 from ngn6_bot.models import Position, Side
 from ngn6_bot.paper import PaperPortfolio, PaperPortfolioConfig
 from ngn6_bot.recorder import StrategyRecorder
-from ngn6_bot.runtime_metadata import current_commit_hash
+from ngn6_bot.runtime_metadata import add_commit_hash, current_commit_hash
 
 
 def test_current_commit_hash_prefers_environment(monkeypatch):
@@ -37,6 +37,16 @@ def test_recorder_adds_commit_hash_to_runtime_jsonl(tmp_path, monkeypatch):
     row = json.loads((tmp_path / "decisions.jsonl").read_text(encoding="utf-8"))
     assert row["commit_hash"] == "recorder-hash"
 
+    current_commit_hash.cache_clear()
+
+
+def test_add_commit_hash_replaces_stale_runtime_attribution(monkeypatch):
+    current_commit_hash.cache_clear()
+    monkeypatch.setenv("NGN6_COMMIT_HASH", "current-hash")
+
+    payload = add_commit_hash({"commit_hash": "stale-hash"})
+
+    assert payload["commit_hash"] == "current-hash"
     current_commit_hash.cache_clear()
 
 

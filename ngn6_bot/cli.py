@@ -33,6 +33,7 @@ from ngn6_bot.learning.shadow import evaluate_shadow_predictions, save_shadow_re
 from ngn6_bot.learning.training import train_feedback_from_api
 from ngn6_bot.logging_json import setup_logging
 from ngn6_bot.review import generate_review_from_api
+from ngn6_bot.strategy_audit import run_strategy_audit
 from ngn6_bot.tbank import TInvestGateway
 
 
@@ -206,6 +207,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     diagnostics_parser.add_argument("--top-features", type=int, default=20)
     diagnostics_parser.add_argument("--report", default="reports/model_diagnostics.json")
+
+    strategy_audit_parser = subparsers.add_parser(
+        "strategy-audit",
+        help="Build a per-trade paper strategy forensic report.",
+    )
+    strategy_audit_parser.add_argument("--config", default="config/ngn6.yaml")
+    strategy_audit_parser.add_argument("--events", default=None)
+    strategy_audit_parser.add_argument("--decisions", default=None)
+    strategy_audit_parser.add_argument("--market", default=None)
+    strategy_audit_parser.add_argument("--output-dir", default="reports/strategy_audit")
+    strategy_audit_parser.add_argument(
+        "--fetch-candles",
+        action="store_true",
+        help="Fetch look-ahead-safe 1m/5m/15m candle context from T-Invest.",
+    )
 
     dashboard_parser = subparsers.add_parser(
         "dashboard",
@@ -599,6 +615,30 @@ def main(argv: list[str] | None = None) -> int:
                     "label_distribution": report["label_distribution"],
                     "current_target": report["current_candidate"].get("target"),
                     "thresholds": report["threshold_replay"],
+                },
+            },
+        )
+        return 0
+
+    if args.command == "strategy-audit":
+        report = run_strategy_audit(
+            config,
+            events_path=args.events,
+            decisions_path=args.decisions,
+            market_path=args.market,
+            output_dir=args.output_dir,
+            fetch_candles=args.fetch_candles,
+            logger=logger,
+        )
+        logger.info(
+            "strategy_audit_ok",
+            extra={
+                "event": "strategy_audit_ok",
+                "details": {
+                    "output_dir": args.output_dir,
+                    "trades": report["trade_period"]["completed_trades"],
+                    "net_pnl_rub": report["overall"]["net_pnl_rub"],
+                    "profit_factor": report["overall"]["profit_factor"],
                 },
             },
         )

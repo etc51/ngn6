@@ -8,6 +8,7 @@ Automated tests for bot safety, trading logic, ML gates, reporting, and integrat
 - `test_training_promotion.py`, `test_walk_forward.py`, `test_feedback_model.py` - ML training and validation behavior.
 - `test_backtest.py`, `test_tradeflow.py`, `test_signals.py`, `test_risk.py`, `test_costs.py` - strategy and risk behavior.
 - `test_paper.py`, `test_runtime_metadata.py` - paper portfolio and commit-hash report attribution.
+- `test_strategy_audit.py` - paper-event pairing, P&L reconciliation, and audit report output.
 - `test_config*.py`, `test_token_normalization.py`, `test_tbank_migration.py` - config and API safety.
 - Other files test indicators, orderbook, microstructure replay, daily oracle, and legacy bridge behavior.
 
