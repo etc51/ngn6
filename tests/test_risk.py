@@ -6,6 +6,7 @@ from ngn6_bot.risk import (
     calculate_position_lots,
     move_stop_to_breakeven,
     must_flatten_before_clearing,
+    trading_session_block_reason,
     update_trailing_stop,
 )
 
@@ -39,6 +40,42 @@ def test_position_size_is_capped():
 def test_pre_clearing_window_detected():
     now = datetime(2026, 1, 1, 10, 57, tzinfo=timezone.utc)
     assert must_flatten_before_clearing(now, _risk_config())
+
+
+def test_trading_session_blocks_outside_moscow_window():
+    before_open = datetime(2026, 1, 1, 6, 59, tzinfo=timezone.utc)
+    after_open = datetime(2026, 1, 1, 7, 0, tzinfo=timezone.utc)
+
+    assert trading_session_block_reason(
+        before_open,
+        timezone="Europe/Moscow",
+        trading_start="10:00",
+        trading_end="23:45",
+    ) == "outside_trading_session"
+    assert trading_session_block_reason(
+        after_open,
+        timezone="Europe/Moscow",
+        trading_start="10:00",
+        trading_end="23:45",
+    ) is None
+
+
+def test_trading_session_supports_overnight_and_forced_weekday():
+    now = datetime(2026, 1, 2, 20, 0, tzinfo=timezone.utc)
+
+    assert trading_session_block_reason(
+        now,
+        timezone="UTC",
+        trading_start="19:00",
+        trading_end="03:00",
+    ) is None
+    assert trading_session_block_reason(
+        now,
+        timezone="UTC",
+        trading_start="19:00",
+        trading_end="03:00",
+        forced_flat_weekdays=["friday"],
+    ) == "forced_flat_weekday"
 
 
 def test_position_is_open_property():

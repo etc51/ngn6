@@ -21,6 +21,7 @@ from ngn6_bot.learning.purged_walk_forward import purged_walk_forward_splits
 from ngn6_bot.learning.shadow import evaluate_shadow_predictions
 from ngn6_bot.learning.triple_barrier import TripleBarrierConfig, label_entry_decision
 from ngn6_bot.models import Candle, OrderBookFeatures, Position, Side, Signal, TradeFlowFeatures
+from ngn6_bot.paper import PaperRiskSnapshot
 from ngn6_bot.risk import RiskConfig, calculate_position_lots
 
 
@@ -312,7 +313,7 @@ def test_signal_flip_hysteresis_blocks_single_early_flip():
         side=Side.LONG,
         lots=1,
         avg_price=100,
-        opened_at=now - timedelta(minutes=10),
+        opened_at=now - timedelta(minutes=1),
         stop_price=99,
     )
 
@@ -328,6 +329,112 @@ def test_signal_flip_hysteresis_blocks_single_early_flip():
 
     assert confirmed is False
     assert details["signal_flip_blocked"] == "min_hold_bars"
+
+
+def test_opposite_ml_exit_waits_for_two_completed_one_minute_bars():
+    config = load_config("config/ngn6.yaml")
+    bot = TradingBot(config, logging.getLogger("test"), runtime_services=False)
+    now = datetime(2026, 1, 1, 10, 20, tzinfo=timezone.utc)
+    position = Position(
+        side=Side.LONG,
+        lots=1,
+        avg_price=100,
+        opened_at=now - timedelta(seconds=119),
+        stop_price=99,
+    )
+
+    confirmed, details = bot._exit_signal_confirmed(
+        kind="ml_exit",
+        position=position,
+        reason="ml_exit_opposite:short:0.80",
+        now=now,
+        price=100,
+        target_side=Side.SHORT,
+    )
+
+    assert confirmed is False
+    assert details["opposite_exit_blocked"] == "min_hold_bars"
+
+
+def test_15m_extrema_before_entry_cannot_trigger_retroactive_stop():
+    opened_at = datetime(2026, 1, 1, 10, 7, tzinfo=timezone.utc)
+    position = Position(
+        side=Side.LONG,
+        lots=1,
+        avg_price=100,
+        opened_at=opened_at,
+        stop_price=99,
+        take_profit2=102,
+    )
+    candle = pd.Series(
+        {"open": 100, "high": 103, "low": 98, "close": 100.5},
+        name=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
+    )
+
+    reason, price = TradingBot._exit_from_15m_candle(position, candle, 100.5)
+
+    assert reason is None
+    assert price == 100.5
+
+
+def test_15m_extrema_after_entry_can_trigger_stop():
+    position = Position(
+        side=Side.LONG,
+        lots=1,
+        avg_price=100,
+        opened_at=datetime(2026, 1, 1, 10, 7, tzinfo=timezone.utc),
+        stop_price=99,
+    )
+    candle = pd.Series(
+        {"open": 100, "high": 101, "low": 98, "close": 100.5},
+        name=datetime(2026, 1, 1, 10, 15, tzinfo=timezone.utc),
+    )
+
+    reason, price = TradingBot._exit_from_15m_candle(position, candle, 100.5)
+
+    assert reason == "hard_stop_hit"
+    assert price == 99
+
+
+def test_runtime_indicator_frame_excludes_unclosed_candle():
+    bot = TradingBot(load_config("config/ngn6.yaml"), logging.getLogger("test"), runtime_services=False)
+    start = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+    for minute in range(2):
+        bot.state.update_candle(
+            Candle(
+                timestamp=start + timedelta(minutes=minute),
+                open=100 + minute,
+                high=101 + minute,
+                low=99 + minute,
+                close=100.5 + minute,
+                volume=10,
+                timeframe="1min",
+            )
+        )
+
+    frame = bot._indicator_frame("1min", start + timedelta(minutes=1, seconds=30))
+
+    assert len(frame) == 1
+    assert frame.index[-1] == pd.Timestamp(start)
+
+
+def test_paper_risk_gate_enforces_persisted_hard_stop_streak():
+    bot = TradingBot(load_config("config/ngn6.yaml"), logging.getLogger("test"), runtime_services=False)
+    snapshot = PaperRiskSnapshot(
+        daily_net_pnl=-500,
+        completed_trades_today=2,
+        consecutive_losses=2,
+        consecutive_hard_stops=2,
+    )
+    bot.paper_portfolio = SimpleNamespace(risk_snapshot=lambda now, timezone_name: snapshot)
+
+    reason, details = bot._paper_risk_entry_block(
+        datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
+        bot._risk_config(),
+    )
+
+    assert reason == "consecutive_hard_stop_limit_reached"
+    assert details["consecutive_hard_stops"] == 2
 
 
 def test_live_disabled(tmp_path):

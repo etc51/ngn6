@@ -151,10 +151,7 @@ class MarketState:
         }.get(candle.timeframe)
         if target is None:
             return
-        if target and target[-1].timestamp == candle.timestamp:
-            target[-1] = candle
-        else:
-            target.append(candle)
+        self._upsert_candle(target, candle)
         self.last_stream_update = candle.timestamp
         if candle.timeframe == "1min":
             self._aggregate_from_1m(candle, "5min", self.candles_5m, 5)
@@ -168,9 +165,11 @@ class MarketState:
     def _aggregate_from_1m(candle: Candle, timeframe: str, target: Deque[Candle], minutes: int) -> None:
         bucket_minute = candle.timestamp.minute - (candle.timestamp.minute % minutes)
         bucket_start = candle.timestamp.replace(minute=bucket_minute, second=0, microsecond=0)
-        if target and target[-1].timestamp == bucket_start:
-            existing = target[-1]
-            target[-1] = Candle(
+        existing = next((item for item in target if item.timestamp == bucket_start), None)
+        if existing is not None:
+            MarketState._upsert_candle(
+                target,
+                Candle(
                 timestamp=bucket_start,
                 open=existing.open,
                 high=max(existing.high, candle.high),
@@ -178,9 +177,11 @@ class MarketState:
                 close=candle.close,
                 volume=existing.volume + candle.volume,
                 timeframe=timeframe,
+                ),
             )
             return
-        target.append(
+        MarketState._upsert_candle(
+            target,
             Candle(
                 timestamp=bucket_start,
                 open=candle.open,
@@ -189,5 +190,14 @@ class MarketState:
                 close=candle.close,
                 volume=candle.volume,
                 timeframe=timeframe,
-            )
+            ),
         )
+
+    @staticmethod
+    def _upsert_candle(target: Deque[Candle], candle: Candle) -> None:
+        by_timestamp = {item.timestamp: item for item in target}
+        by_timestamp[candle.timestamp] = candle
+        ordered = [by_timestamp[key] for key in sorted(by_timestamp)]
+        maxlen = target.maxlen
+        target.clear()
+        target.extend(ordered[-maxlen:] if maxlen is not None else ordered)

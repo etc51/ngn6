@@ -241,7 +241,7 @@ class TInvestGateway:
                         ],
                     )
                 )
-            if getattr(item, "candle", None):
+            if getattr(item, "candle", None) and getattr(item.candle, "is_complete", True):
                 candle = item.candle
                 on_candle(
                     Candle(
@@ -275,10 +275,20 @@ def _now_utc() -> datetime:
 
 
 def _trade_direction(trade) -> str:
-    direction = str(getattr(trade, "direction", "")).lower()
-    if "buy" in direction:
+    direction = getattr(trade, "direction", None)
+    name = str(getattr(direction, "name", "")).lower()
+    text = str(direction).lower()
+    if "buy" in name or "buy" in text:
         return "buy"
-    if "sell" in direction:
+    if "sell" in name or "sell" in text:
+        return "sell"
+    try:
+        numeric = int(direction)
+    except (TypeError, ValueError):
+        numeric = 0
+    if numeric == 1:
+        return "buy"
+    if numeric == 2:
         return "sell"
     return "unknown"
 

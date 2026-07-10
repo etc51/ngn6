@@ -396,6 +396,7 @@ costs:
 signal_flip:
   close_on_flip: true
   min_hold_bars_before_flip_exit: 2
+  hold_bar_seconds: 60
   require_opposite_signal_strength: 0.55
   require_opposite_ml_confirmation: true
 

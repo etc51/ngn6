@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ngn6_bot.models import Position, Side
 from ngn6_bot.paper import PaperPortfolio, PaperPortfolioConfig
@@ -110,3 +110,37 @@ def test_paper_portfolio_uses_futures_initial_margin_for_lot_limit(tmp_path):
     assert state["margin_used"] == 14237.52
     assert round(state["unrealized_pnl"], 5) == 38.96465
     assert round(state["contract_value"], 5) == 25389.36594
+
+
+def test_risk_snapshot_persists_daily_loss_streak_and_last_exit(tmp_path):
+    portfolio = _portfolio(tmp_path)
+    now = datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc)
+    for index in range(2):
+        opened_at = now + timedelta(minutes=index * 2)
+        accepted, _, _ = portfolio.open_position(
+            side=Side.LONG,
+            lots=1,
+            price=100,
+            stop_price=99,
+            reason="test",
+            timestamp=opened_at,
+        )
+        assert accepted
+        accepted, _, _ = portfolio.close_position(
+            position=Position(side=Side.LONG, lots=1, avg_price=100, opened_at=opened_at),
+            price=99,
+            lots=1,
+            reason="hard_stop_hit",
+            timestamp=opened_at + timedelta(minutes=1),
+        )
+        assert accepted
+
+    snapshot = portfolio.risk_snapshot(now + timedelta(hours=1), "UTC")
+
+    assert snapshot.daily_net_pnl == -200
+    assert snapshot.completed_trades_today == 2
+    assert snapshot.consecutive_losses == 2
+    assert snapshot.consecutive_hard_stops == 2
+    assert snapshot.last_exit_side == Side.LONG
+    assert snapshot.last_exit_reason == "hard_stop_hit"
+    assert snapshot.last_exit_pnl_ticks == -100

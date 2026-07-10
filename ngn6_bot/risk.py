@@ -33,6 +33,9 @@ class RiskConfig:
     max_position_exposure_pct: float = 0.0
     cash_reserve_pct: float = 0.0
     max_drawdown_pct: float = 0.0
+    daily_max_loss_pct: float = 0.0
+    stop_after_consecutive_losses: int = 0
+    stop_after_consecutive_hard_stops: int = 0
 
 
 def calculate_position_lots(signal: Signal, config: RiskConfig) -> int:
@@ -187,6 +190,35 @@ def must_flatten_before_clearing(now: datetime, config: RiskConfig) -> bool:
     return False
 
 
+def trading_session_block_reason(
+    now: datetime,
+    *,
+    timezone: str,
+    trading_start: str | None,
+    trading_end: str | None,
+    forced_flat_hours: list[object] | None = None,
+    forced_flat_weekdays: list[object] | None = None,
+) -> str | None:
+    local_now = now.astimezone(ZoneInfo(timezone))
+    if _weekday_is_forced_flat(local_now, forced_flat_weekdays or []):
+        return "forced_flat_weekday"
+    if _hour_is_forced_flat(local_now, forced_flat_hours or []):
+        return "forced_flat_hour"
+    if not trading_start or not trading_end:
+        return None
+
+    start = time.fromisoformat(str(trading_start))
+    end = time.fromisoformat(str(trading_end))
+    current = local_now.timetz().replace(tzinfo=None)
+    if start == end:
+        return None
+    if start < end:
+        allowed = start <= current < end
+    else:
+        allowed = current >= start or current < end
+    return None if allowed else "outside_trading_session"
+
+
 def drawdown_limit_hit(equity: float, initial_equity: float, config: RiskConfig) -> bool:
     if config.max_drawdown_pct <= 0 or initial_equity <= 0:
         return False
@@ -233,6 +265,41 @@ def _fraction_from_percent_or_fraction(value: float) -> float:
     if parsed > 1.0:
         return parsed / 100.0
     return parsed
+
+
+def _weekday_is_forced_flat(local_now: datetime, values: list[object]) -> bool:
+    names = {
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
+    }
+    for value in values:
+        text = str(value).strip().lower()
+        try:
+            weekday = int(text)
+        except ValueError:
+            weekday = names.get(text, -1)
+        if weekday == local_now.weekday():
+            return True
+    return False
+
+
+def _hour_is_forced_flat(local_now: datetime, values: list[object]) -> bool:
+    for value in values:
+        text = str(value).strip()
+        try:
+            if ":" in text:
+                if time.fromisoformat(text).hour == local_now.hour:
+                    return True
+            elif int(text) == local_now.hour:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _quantity_units(position: Position, config: RiskConfig) -> float:

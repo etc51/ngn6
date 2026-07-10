@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ngn6_bot.config import RuntimeConfig
 from ngn6_bot.models import Position, Side
@@ -27,6 +28,18 @@ class PaperPortfolioConfig:
     initial_margin_on_sell: float
     commission_per_lot_per_side: float
     commission_round_trip_bps: float
+
+
+@dataclass(frozen=True)
+class PaperRiskSnapshot:
+    daily_net_pnl: float = 0.0
+    completed_trades_today: int = 0
+    consecutive_losses: int = 0
+    consecutive_hard_stops: int = 0
+    last_exit_side: Side | None = None
+    last_exit_time: datetime | None = None
+    last_exit_reason: str | None = None
+    last_exit_pnl_ticks: float = 0.0
 
 
 class PaperPortfolio:
@@ -92,6 +105,62 @@ class PaperPortfolio:
             partial_taken=bool(payload.get("partial_taken", False)),
             take_profit1=_optional_float(payload.get("take_profit1")),
             take_profit2=_optional_float(payload.get("take_profit2")),
+        )
+
+    def risk_snapshot(self, now: datetime, timezone_name: str) -> PaperRiskSnapshot:
+        current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+        local_date = current.astimezone(ZoneInfo(timezone_name)).date()
+        completed: list[dict[str, Any]] = []
+        active: dict[str, Any] | None = None
+
+        for event in self._read_events():
+            details = event.get("details") or {}
+            event_name = event.get("event")
+            timestamp = _parse_datetime(event.get("timestamp"))
+            if event_name == "paper_open":
+                active = {
+                    "side": _optional_side(details.get("side")),
+                    "lots": max(1, int(details.get("lots", 1) or 1)),
+                    "net_pnl": -float(details.get("commission", 0.0) or 0.0),
+                }
+                continue
+            if event_name != "paper_close" or active is None or timestamp is None:
+                continue
+            active["net_pnl"] += float(details.get("realized_pnl", 0.0) or 0.0)
+            if int(details.get("remaining_lots", 0) or 0) > 0:
+                continue
+            net_pnl = float(active["net_pnl"])
+            tick_value = self.config.money_value_per_price_step * int(active["lots"])
+            completed.append(
+                {
+                    "timestamp": timestamp,
+                    "side": active["side"],
+                    "reason": str(details.get("reason", "unknown")),
+                    "net_pnl": net_pnl,
+                    "net_ticks": net_pnl / tick_value if tick_value > 0 else net_pnl,
+                }
+            )
+            active = None
+
+        today = [
+            trade
+            for trade in completed
+            if trade["timestamp"].astimezone(ZoneInfo(timezone_name)).date() == local_date
+        ]
+        last = completed[-1] if completed else None
+        return PaperRiskSnapshot(
+            daily_net_pnl=sum(float(trade["net_pnl"]) for trade in today),
+            completed_trades_today=len(today),
+            consecutive_losses=_trailing_count(today, lambda trade: trade["net_pnl"] < 0),
+            consecutive_hard_stops=_trailing_count(
+                today,
+                lambda trade: trade["net_pnl"] < 0
+                and str(trade["reason"]).startswith("hard_stop_hit"),
+            ),
+            last_exit_side=last["side"] if last else None,
+            last_exit_time=last["timestamp"] if last else None,
+            last_exit_reason=last["reason"] if last else None,
+            last_exit_pnl_ticks=float(last["net_ticks"]) if last else 0.0,
         )
 
     def open_position(
@@ -328,6 +397,21 @@ class PaperPortfolio:
         with self.config.events_file.open("a", encoding="utf-8") as file:
             file.write(json.dumps(payload, ensure_ascii=False, default=_json_default) + "\n")
 
+    def _read_events(self) -> list[dict[str, Any]]:
+        try:
+            lines = self.config.events_file.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return []
+        events = []
+        for line in lines:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                events.append(payload)
+        return events
+
     def _pnl_money(self, side: Side, entry_price: float, exit_price: float, lots: int) -> float:
         if lots <= 0 or self.config.min_price_increment <= 0:
             return 0.0
@@ -378,6 +462,23 @@ def _position_payload(position: Position) -> dict[str, Any]:
 
 def _optional_float(value: Any) -> float | None:
     return None if value is None else float(value)
+
+
+def _optional_side(value: Any) -> Side | None:
+    try:
+        side = Side(str(value))
+    except ValueError:
+        return None
+    return side if side != Side.FLAT else None
+
+
+def _trailing_count(trades: list[dict[str, Any]], predicate) -> int:
+    count = 0
+    for trade in reversed(trades):
+        if not predicate(trade):
+            break
+        count += 1
+    return count
 
 
 def _parse_datetime(value: Any) -> datetime | None:

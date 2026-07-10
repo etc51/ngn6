@@ -1,5 +1,6 @@
 import logging
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,3 +53,17 @@ def test_api_target_rejects_obsolete_or_non_tbank_hosts(monkeypatch, target):
 def test_api_target_rejects_empty_target():
     with pytest.raises(RuntimeError):
         tbank._validate_api_target("")
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected"),
+    [
+        (SimpleNamespace(name="TRADE_DIRECTION_BUY"), "buy"),
+        (SimpleNamespace(name="TRADE_DIRECTION_SELL"), "sell"),
+        (1, "buy"),
+        (2, "sell"),
+        (0, "unknown"),
+    ],
+)
+def test_trade_direction_supports_sdk_enum_and_numeric_values(direction, expected):
+    assert tbank._trade_direction(SimpleNamespace(direction=direction)) == expected

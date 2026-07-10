@@ -27,6 +27,7 @@ from ngn6_bot.risk import (
     must_flatten_before_clearing,
     should_take_partial,
     stop_with_buffer,
+    trading_session_block_reason,
     trailing_stop_hit,
     update_trailing_stop,
 )
@@ -61,6 +62,7 @@ class TradingBot:
         self.feedback_model = FeedbackModel.from_runtime_config(config)
         self._last_full_exit: tuple[Side, datetime, str, float] | None = None
         self._pending_exit_signal: dict[str, object] | None = None
+        self._restore_last_full_exit(datetime.now(timezone.utc))
 
     def run_forever(self) -> None:
         token = self.config.token
@@ -155,7 +157,7 @@ class TradingBot:
             )
 
     def _bootstrap_history(self, gateway: TInvestGateway, figi: str) -> None:
-        for timeframe, minutes in [("15min", 4500), ("5min", 1500), ("1min", 300)]:
+        for timeframe, minutes in [("1min", 300), ("5min", 1500), ("15min", 4500)]:
             candles = gateway.get_recent_candles(
                 figi,
                 candle_interval_for_polling(timeframe),
@@ -239,9 +241,9 @@ class TradingBot:
 
         risk_config = self._risk_config()
         if self.state.position.is_open:
-            execution_df = self._indicator_frame("1min")
-            confirmation_df = self._indicator_frame("5min")
-            context_df = self._indicator_frame("15min")
+            execution_df = self._indicator_frame("1min", now)
+            confirmation_df = self._indicator_frame("5min", now)
+            context_df = self._indicator_frame("15min", now)
             flip_signal = None
             ml_exit_reason = None
             ml_exit_prediction = None
@@ -270,12 +272,23 @@ class TradingBot:
                 last_price,
                 now,
                 risk_config,
+                execution_df=execution_df,
                 confirmation_df=confirmation_df,
                 context_df=context_df,
                 flip_signal=flip_signal,
                 ml_exit_reason=ml_exit_reason,
                 ml_exit_prediction=ml_exit_prediction,
             )
+            return
+
+        session_reason = self._session_block_reason(now)
+        if session_reason:
+            self._record_decision(now, "skip", session_reason, details={"price": last_price})
+            return
+
+        paper_risk_reason, paper_risk_details = self._paper_risk_entry_block(now, risk_config)
+        if paper_risk_reason:
+            self._record_decision(now, "skip", paper_risk_reason, details=paper_risk_details)
             return
 
         if paper_state and drawdown_limit_hit(
@@ -309,9 +322,9 @@ class TradingBot:
             self._log_skip(stale_reason, stale_details, now)
             return
 
-        execution_df = self._indicator_frame("1min")
-        confirmation_df = self._indicator_frame("5min")
-        context_df = self._indicator_frame("15min")
+        execution_df = self._indicator_frame("1min", now)
+        confirmation_df = self._indicator_frame("5min", now)
+        context_df = self._indicator_frame("15min", now)
         ml_control = self._ml_control_enabled()
         if ml_control:
             signal = self.feedback_model.signal_from_prediction(
@@ -632,6 +645,7 @@ class TradingBot:
         last_price: float,
         now: datetime,
         risk_config: RiskConfig,
+        execution_df=None,
         confirmation_df=None,
         context_df=None,
         flip_signal=None,
@@ -639,13 +653,17 @@ class TradingBot:
         ml_exit_prediction=None,
     ) -> None:
         position = self.state.position
-        exit_candle = self._latest_exit_candle(context_df)
-        management_price = self._candle_close(exit_candle, last_price)
+        exit_candle = self._latest_exit_candle(execution_df)
+        management_price = last_price
+        session_reason = self._session_block_reason(now)
+        if session_reason:
+            self._close_open_position(executor, position, last_price, session_reason, now)
+            return
         if must_flatten_before_clearing(now, risk_config):
             self._close_open_position(executor, position, last_price, "pre_clearing_flatten", now)
             return
 
-        exit_reason, exit_price = self._exit_from_15m_candle(position, exit_candle, last_price)
+        exit_reason, exit_price = self._exit_from_candle(position, exit_candle, last_price)
         if exit_reason:
             self._close_open_position(
                 executor,
@@ -653,7 +671,7 @@ class TradingBot:
                 exit_price,
                 exit_reason,
                 now,
-                details=self._exit_candle_details(exit_candle),
+                details=self._exit_candle_details(exit_candle, "1m"),
             )
             return
 
@@ -680,7 +698,7 @@ class TradingBot:
                             else None
                         ),
                         **pending_details,
-                        **self._exit_candle_details(exit_candle),
+                        **self._exit_candle_details(exit_candle, "1m"),
                     },
                     position=position,
                 )
@@ -697,7 +715,7 @@ class TradingBot:
                         ml_exit_prediction.as_metadata() if ml_exit_prediction is not None else None
                     ),
                     **pending_details,
-                    **self._exit_candle_details(exit_candle),
+                    **self._exit_candle_details(exit_candle, "1m"),
                 },
             )
             return
@@ -728,7 +746,7 @@ class TradingBot:
                         "signal_reason": flip_signal.reason,
                         "signal_confidence": flip_signal.confidence,
                         **pending_details,
-                        **self._exit_candle_details(exit_candle),
+                        **self._exit_candle_details(exit_candle, "1m"),
                     },
                     position=position,
                 )
@@ -745,7 +763,7 @@ class TradingBot:
                     "signal_reason": flip_signal.reason,
                     "signal_confidence": flip_signal.confidence,
                     **pending_details,
-                    **self._exit_candle_details(exit_candle),
+                    **self._exit_candle_details(exit_candle, "1m"),
                 },
             )
             return
@@ -794,7 +812,7 @@ class TradingBot:
                 "breakeven_moved": breakeven_moved,
                 "stop_price": position.stop_price,
                 "trailing_stop": position.trailing_stop,
-                **self._exit_candle_details(exit_candle),
+                **self._exit_candle_details(exit_candle, "1m"),
             },
             position=position,
         )
@@ -840,21 +858,11 @@ class TradingBot:
             return fallback_price
 
     @staticmethod
-    def _exit_from_15m_candle(position, candle, fallback_price: float) -> tuple[str | None, float]:
+    def _exit_from_candle(position, candle, fallback_price: float) -> tuple[str | None, float]:
         if not position.is_open:
             return None, fallback_price
-        if candle is None:
-            if position.side == Side.LONG:
-                if position.stop_price is not None and fallback_price <= position.stop_price:
-                    return "hard_stop_hit", position.stop_price
-                if position.take_profit2 is not None and fallback_price >= position.take_profit2:
-                    return "take_profit_2_5r", position.take_profit2
-            if position.side == Side.SHORT:
-                if position.stop_price is not None and fallback_price >= position.stop_price:
-                    return "hard_stop_hit", position.stop_price
-                if position.take_profit2 is not None and fallback_price <= position.take_profit2:
-                    return "take_profit_2_5r", position.take_profit2
-            return None, fallback_price
+        if candle is None or not TradingBot._candle_started_after_entry(position, candle):
+            return TradingBot._exit_from_price(position, fallback_price)
 
         high = float(candle["high"])
         low = float(candle["low"])
@@ -870,19 +878,51 @@ class TradingBot:
                 return "take_profit_2_5r", position.take_profit2
         return None, fallback_price
 
+    _exit_from_15m_candle = _exit_from_candle
+
     @staticmethod
-    def _exit_candle_details(candle) -> dict:
+    def _exit_from_price(position, price: float) -> tuple[str | None, float]:
+        if position.side == Side.LONG:
+            if position.stop_price is not None and price <= position.stop_price:
+                return "hard_stop_hit", position.stop_price
+            if position.take_profit2 is not None and price >= position.take_profit2:
+                return "take_profit_2_5r", position.take_profit2
+        if position.side == Side.SHORT:
+            if position.stop_price is not None and price >= position.stop_price:
+                return "hard_stop_hit", position.stop_price
+            if position.take_profit2 is not None and price <= position.take_profit2:
+                return "take_profit_2_5r", position.take_profit2
+        return None, price
+
+    @staticmethod
+    def _candle_started_after_entry(position, candle) -> bool:
+        opened_at = getattr(position, "opened_at", None)
+        timestamp = getattr(candle, "name", None)
+        if opened_at is None or timestamp is None:
+            return False
+        if hasattr(timestamp, "to_pydatetime"):
+            timestamp = timestamp.to_pydatetime()
+        if not isinstance(timestamp, datetime):
+            return False
+        opened = opened_at if opened_at.tzinfo else opened_at.replace(tzinfo=timezone.utc)
+        started = timestamp if timestamp.tzinfo else timestamp.replace(tzinfo=timezone.utc)
+        return started >= opened
+
+    @staticmethod
+    def _exit_candle_details(candle, timeframe: str = "15m") -> dict:
         if candle is None:
             return {}
         details = {}
         for column in ("open", "high", "low", "close"):
             try:
-                details[f"15m_{column}"] = float(candle[column])
+                details[f"{timeframe}_{column}"] = float(candle[column])
             except (KeyError, TypeError, ValueError):
                 pass
         timestamp = getattr(candle, "name", None)
         if timestamp is not None:
-            details["15m_timestamp"] = timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
+            details[f"{timeframe}_timestamp"] = (
+                timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
+            )
         return details
 
     def _exit_signal_confirmed(
@@ -897,6 +937,10 @@ class TradingBot:
         target_side: Side | None = None,
         signal_confidence: float | None = None,
     ) -> tuple[bool, dict]:
+        if kind == "ml_exit" and reason.startswith("ml_exit_opposite"):
+            hold_allowed, hold_details = self._opposite_exit_min_hold_allows(position, now)
+            if not hold_allowed:
+                return False, hold_details
         if kind == "signal_flip":
             flip_allowed, flip_details = self._signal_flip_hysteresis_allows(
                 position=position,
@@ -1025,10 +1069,23 @@ class TradingBot:
 
         return True, details
 
-    @staticmethod
-    def _position_hold_bars(position, now: datetime, bar_seconds: float = 900.0) -> float:
+    def _opposite_exit_min_hold_allows(self, position, now: datetime) -> tuple[bool, dict]:
+        min_hold_bars = int(
+            self.config.get("signal_flip", "min_hold_bars_before_flip_exit", default=0)
+        )
+        hold_bars = self._position_hold_bars(position, now)
+        details = {
+            "opposite_exit_hold_bars": round(hold_bars, 3),
+            "opposite_exit_min_hold_bars": min_hold_bars,
+        }
+        if min_hold_bars > 0 and hold_bars < min_hold_bars:
+            return False, {**details, "opposite_exit_blocked": "min_hold_bars"}
+        return True, details
+
+    def _position_hold_bars(self, position, now: datetime) -> float:
+        bar_seconds = float(self.config.get("signal_flip", "hold_bar_seconds", default=60.0))
         opened_at = getattr(position, "opened_at", None)
-        if opened_at is None:
+        if opened_at is None or bar_seconds <= 0:
             return 0.0
         if opened_at.tzinfo is None:
             opened_at = opened_at.replace(tzinfo=timezone.utc)
@@ -1079,6 +1136,7 @@ class TradingBot:
         return reason is not None
 
     def _reentry_cooldown_block(self, side: Side, now: datetime) -> tuple[str | None, dict]:
+        self._restore_last_full_exit(now)
         if self._last_full_exit is None:
             return None, {}
         exit_side, exit_time, exit_reason, exit_pnl_ticks = self._last_full_exit
@@ -1126,6 +1184,64 @@ class TradingBot:
                 "cooldown_minutes": take_profit_minutes,
             }
         return None, {}
+
+    def _restore_last_full_exit(self, now: datetime) -> None:
+        if self.paper_portfolio is None:
+            return
+        snapshot = self.paper_portfolio.risk_snapshot(now, self.config.timezone)
+        if snapshot.last_exit_side is None or snapshot.last_exit_time is None:
+            return
+        self._last_full_exit = (
+            snapshot.last_exit_side,
+            snapshot.last_exit_time,
+            snapshot.last_exit_reason or "unknown",
+            snapshot.last_exit_pnl_ticks,
+        )
+
+    def _paper_risk_entry_block(
+        self, now: datetime, risk_config: RiskConfig
+    ) -> tuple[str | None, dict]:
+        if self.paper_portfolio is None:
+            return None, {}
+        snapshot = self.paper_portfolio.risk_snapshot(now, self.config.timezone)
+        details = {
+            "daily_net_pnl": round(snapshot.daily_net_pnl, 2),
+            "completed_trades_today": snapshot.completed_trades_today,
+            "consecutive_losses": snapshot.consecutive_losses,
+            "consecutive_hard_stops": snapshot.consecutive_hard_stops,
+        }
+        daily_limit = risk_config.deposit_value * _fraction_from_percent_or_fraction(
+            risk_config.daily_max_loss_pct
+        )
+        details["daily_loss_limit"] = round(daily_limit, 2)
+        if daily_limit > 0 and snapshot.daily_net_pnl <= -daily_limit:
+            return "daily_loss_limit_reached", details
+        if (
+            risk_config.stop_after_consecutive_hard_stops > 0
+            and snapshot.consecutive_hard_stops
+            >= risk_config.stop_after_consecutive_hard_stops
+        ):
+            return "consecutive_hard_stop_limit_reached", details
+        if (
+            risk_config.stop_after_consecutive_losses > 0
+            and snapshot.consecutive_losses >= risk_config.stop_after_consecutive_losses
+        ):
+            return "consecutive_loss_limit_reached", details
+        return None, details
+
+    def _session_block_reason(self, now: datetime) -> str | None:
+        return trading_session_block_reason(
+            now,
+            timezone=self.config.timezone,
+            trading_start=self.config.get("session", "trading_start", default=None),
+            trading_end=self.config.get("session", "trading_end", default=None),
+            forced_flat_hours=list(
+                self.config.get("session", "forced_flat_hours", default=[])
+            ),
+            forced_flat_weekdays=list(
+                self.config.get("session", "forced_flat_weekdays", default=[])
+            ),
+        )
 
     @staticmethod
     def _position_pnl_ticks(position, price: float) -> float:
@@ -1230,12 +1346,20 @@ class TradingBot:
             extra={"event": "feedback_model_reloaded", "details": {}},
         )
 
-    def _indicator_frame(self, timeframe: str):
+    def _indicator_frame(self, timeframe: str, now: datetime | None = None):
         candles = {
             "1min": list(self.state.candles_1m),
             "5min": list(self.state.candles_5m),
             "15min": list(self.state.candles_15m),
         }[timeframe]
+        if now is not None:
+            minutes = {"1min": 1, "5min": 5, "15min": 15}[timeframe]
+            current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+            candles = [
+                candle
+                for candle in candles
+                if _aware_utc(candle.timestamp) + timedelta(minutes=minutes) <= current
+            ]
         return add_indicators(
             candles_to_frame(candles),
             ema_fast=int(self.config.get("indicators", "ema_fast")),
@@ -1541,6 +1665,19 @@ class TradingBot:
             ),
             cash_reserve_pct=float(self.config.get("risk", "cash_reserve_pct", default=0.0)),
             max_drawdown_pct=float(self.config.get("risk", "max_drawdown_pct", default=0.0)),
+            daily_max_loss_pct=float(
+                self.config.get(
+                    "risk",
+                    "daily_max_loss_pct",
+                    default=self.config.get("risk", "max_daily_loss_pct", default=0.0),
+                )
+            ),
+            stop_after_consecutive_losses=int(
+                self.config.get("risk", "stop_after_consecutive_losses", default=0)
+            ),
+            stop_after_consecutive_hard_stops=int(
+                self.config.get("risk", "stop_after_consecutive_hard_stops", default=0)
+            ),
         )
 
     def _execution_cost_config(self) -> ExecutionCostConfig:
@@ -1639,9 +1776,9 @@ class TradingBot:
 
     def _feature_snapshot_for_recording(self, now: datetime, orderbook_features, trade_flow):
         try:
-            execution_df = self._indicator_frame("1min")
-            confirmation_df = self._indicator_frame("5min")
-            context_df = self._indicator_frame("15min")
+            execution_df = self._indicator_frame("1min", now)
+            confirmation_df = self._indicator_frame("5min", now)
+            context_df = self._indicator_frame("15min", now)
             if execution_df.empty:
                 return {
                     "features": {},
@@ -1746,3 +1883,14 @@ class TradingBot:
 
 def _is_take_profit_exit(reason: str) -> bool:
     return "take_profit" in reason
+
+
+def _fraction_from_percent_or_fraction(value: float) -> float:
+    parsed = max(0.0, float(value))
+    return parsed / 100.0 if parsed > 1.0 else parsed
+
+
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

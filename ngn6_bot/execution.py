@@ -121,7 +121,7 @@ class BrokerExecutor:
         position.side = result.side
         position.lots = result.lots
         position.avg_price = result.price
-        position.opened_at = datetime.utcnow()
+        position.opened_at = datetime.now(timezone.utc)
         position.stop_price = stop_price
         position.trailing_stop = stop_price
         position.partial_taken = False
